@@ -15,6 +15,37 @@ Antes de desplegar esta imagen sobre un contenedor anterior que corría como roo
 
 La documentación oficial de [Playwright en Docker](https://playwright.dev/python/docs/docker) describe el usuario separado y el perfil seccomp que permite `clone`, `setns` y `unshare` para el sandbox. La [guía de navegadores](https://playwright.dev/python/docs/browsers) explica la instalación del canal Chrome y las dependencias del sistema. Cualquier ajuste de política se aplica al runtime y requiere revisión para ese host; no se necesita acceso a la red privada ni cambiar los filtros de URL/DNS del bot.
 
+## Perfil seccomp para Chrome
+
+Para Docker Engine **29.9.3**, la [fuente oficial del motor](https://github.com/moby/moby/blob/docker-v29.9.3/go.mod#L78) fija `github.com/moby/profiles/seccomp v0.2.4`. Se usa su [perfil por defecto exacto](https://github.com/moby/profiles/blob/245180c51918481c0525424b3ee025d2b435d46c/seccomp/default.json), añadiendo únicamente permiso para `clone`, `setns` y `unshare`, como recomienda Playwright para el sandbox. Se conservan `defaultAction=SCMP_ACT_ERRNO`, el resto de reglas y sus restricciones. No se sustituye por el perfil antiguo completo de Playwright, que difiere del default moderno en otras llamadas.
+
+El perfil completo es un recurso operativo administrado por aplicación; Docker no hereda el default a partir de un fragmento de tres llamadas. Esta receta reproduce el JSON sin mantener una copia extensa del proveedor en el repositorio:
+
+```python
+import hashlib, json, urllib.request
+from pathlib import Path
+
+url = "https://raw.githubusercontent.com/moby/profiles/245180c51918481c0525424b3ee025d2b435d46c/seccomp/default.json"
+with urllib.request.urlopen(url, timeout=10) as response:
+    source = response.read(100001)
+assert hashlib.sha256(source).hexdigest() == "785b2429264afba4d594320337cb17f144f3c7d51585f9805eef72e28f4f9334"
+profile = json.loads(source)
+profile["syscalls"].insert(0, {
+    "comment": "Allow Chrome sandbox namespaces",
+    "names": ["clone", "setns", "unshare"], "action": "SCMP_ACT_ALLOW",
+    "args": [], "includes": {}, "excludes": {},
+})
+output = (json.dumps(profile, indent=2) + "\n").encode()
+assert hashlib.sha256(output).hexdigest() == "43d3e9c825798859f9917e6b3548cb845dbaa6c11ccb16c74c1a178fa4d4150a"
+Path("seccomp-chrome.json").write_bytes(output)
+```
+
+Antes de aplicarlo, compara estructuralmente con el default: retirar el primer bloque debe producir exactamente el JSON original. Una actualización de Docker requiere revisar su versión de `moby/profiles`; no se actualiza esta política automáticamente.
+
+En Coolify 4.6.0, el perfil puede guardarse como archivo administrado bajo la configuración de la aplicación y referenciarse mediante `--security-opt seccomp=/ruta/absoluta/seccomp-chrome.json`. El helper monta readonly los perfiles absolutos reconocidos para que Compose pueda leerlos. La [implementación de Compose](https://github.com/docker/compose/blob/main/pkg/compose/create.go) lee el archivo desde el cliente y envía su JSON al daemon; una ruta relativa se resuelve contra `project.WorkingDir`, mientras que una absoluta se conserva. El archivo solo dentro de `/app` no acredita que el cliente Compose pueda abrirlo.
+
+La comprobación controlada mantiene la misma imagen, usuario 1000 y demás opciones, cambiando solo ese perfil. Primero verifica el arranque de Chrome con `chromium_sandbox=True`; después prueba `WebAccess.read_webpage("https://example.com/")` y registra únicamente categoría, HTTP, tamaño y duración. Conservar el sandbox exige además que AppArmor y el kernel permitan los namespaces: si continúa `Operation not permitted`, el fallo no demuestra por sí solo que seccomp sea la única causa. No se cambia la política global del host, capacidades ni AppArmor para saltar esa comprobación.
+
 ## Comprobación después del despliegue
 
 Verifica por separado:
