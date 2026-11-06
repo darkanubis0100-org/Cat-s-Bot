@@ -1,4 +1,5 @@
-discord.py[voice]>=2.7.1,<3  # voice extra instala PyNaCl + davey; requerido para radio/voz
+discord.py[voice]==2.7.1  # voice extra instala PyNaCl; requerido para radio/voz
+davey==0.1.6  # discord.py 2.7.1 usa la API de transiciones anterior a davey 0.2.
 python-dotenv>=1.0.0
 # Web API (reemplaza Flask)
 fastapi>=0.115.0
