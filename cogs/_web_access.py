@@ -266,8 +266,11 @@ class _PublicProxy:
         upstream = None
         try:
             self.requests += 1
-            if self.requests > MAX_REQUESTS or len(self.tasks) > 16 or self.exhausted:
+            if self.requests > MAX_REQUESTS or self.exhausted:
                 self.exhausted = True
+                return
+            # A busy socket slot does not exhaust the whole page's resource budget.
+            if len(self.tasks) > 16:
                 return
             async with asyncio.timeout(PAGE_TIMEOUT):
                 headers = await reader.readuntil(b"\r\n\r\n")

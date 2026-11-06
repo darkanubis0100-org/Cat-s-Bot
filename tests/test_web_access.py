@@ -71,6 +71,57 @@ class PublicDNSTests(unittest.IsolatedAsyncioTestCase):
         await proxy.close()
         self.assertFalse(proxy.tasks)
 
+    async def test_proxy_concurrency_peak_rejects_only_excess_connection_and_recovers(self):
+        body = b"Public article evidence"
+        async def serve(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
+            await writer.drain()
+            writer.close()
+        fixture = await asyncio.start_server(serve, "127.0.0.1", 0)
+        fixture_port = fixture.sockets[0].getsockname()[1]
+        proxy, held = _PublicProxy(), []
+        async def wait_for_active(count):
+            while len(proxy.tasks) != count:
+                await asyncio.sleep(0.01)
+        try:
+            port = int((await proxy.start()).rsplit(":", 1)[1])
+            for _ in range(16):
+                _, writer = await asyncio.open_connection("127.0.0.1", port)
+                held.append(writer)
+            await asyncio.wait_for(wait_for_active(16), 2)
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            self.assertEqual(await asyncio.wait_for(reader.read(), 2), b"")
+            writer.close()
+            await writer.wait_closed()
+            self.assertFalse(proxy.exhausted)
+            for writer in held:
+                writer.close()
+                await writer.wait_closed()
+            await asyncio.wait_for(wait_for_active(0), 2)
+            async def connect(host, target_port):
+                return await asyncio.open_connection("127.0.0.1", fixture_port)
+            with patch.object(proxy, "_connect", connect):
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(b"GET http://example.com/article HTTP/1.1\r\nHost: example.com\r\n\r\n")
+                await writer.drain()
+                self.assertIn(body, await asyncio.wait_for(reader.read(), 2))
+                writer.close()
+                await writer.wait_closed()
+            self.assertFalse(proxy.exhausted)
+            with patch("cogs._web_access.MAX_REQUESTS", proxy.requests):
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                self.assertEqual(await asyncio.wait_for(reader.read(), 2), b"")
+                writer.close()
+                await writer.wait_closed()
+            self.assertTrue(proxy.exhausted)
+        finally:
+            for writer in held:
+                writer.close()
+            await proxy.close()
+            fixture.close()
+            await fixture.wait_closed()
+
     async def test_proxy_transfer_budget_closes_stream(self):
         async def serve(reader, writer):
             await reader.readuntil(b"\r\n\r\n")
