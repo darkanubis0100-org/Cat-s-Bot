@@ -12,7 +12,7 @@ La investigación web es una función opcional de Strata. La búsqueda se limita
 
 ## Investigación web opcional
 
-`ai_web_enabled` activa búsqueda pública con DuckDuckGo/Yahoo y lectura mediante Chrome Headless, solo con Strata. Está apagado por defecto. Requiere las dependencias e instalación descritas en la [guía del navegador WSL](../deploy/wsl/WEB_BROWSER.md). No usa el perfil ni sesiones del navegador del usuario; solo permite lectura pública, sin login, formularios ni acciones externas.
+`ai_web_enabled` activa búsqueda pública con DuckDuckGo/Yahoo y lectura mediante Chrome Headless, solo con Strata. Está apagado por defecto. Requiere las dependencias e instalación descritas para [Docker/Coolify](../deploy/docker/README.md) o [WSL](../deploy/wsl/WEB_BROWSER.md), según el entorno. No usa el perfil ni sesiones del navegador del usuario; solo permite lectura pública, sin login, formularios ni acciones externas.
 
 Cada consulta prueba primero DuckDuckGo y usa Yahoo solo si falla o no entrega resultados públicos válidos. Cada motor dispone de hasta 6 segundos, con timeout de red de 4 segundos, dentro del plazo de 15 segundos de la herramienta. Los resultados se validan por URL y DNS públicos, se eliminan duplicados y solo los éxitos se guardan en caché durante cinco minutos. El fallback interno no gasta otra de las dos consultas del planificador ni amplía los 30 segundos del modo estándar. Si ambos fallan, se devuelve un error de herramienta; no se presenta una lista vacía como búsqueda útil. Los diagnósticos DEBUG registran motor, categoría del resultado y cantidad, sin consultas, URLs ni mensajes de error del proveedor.
 
@@ -37,6 +37,10 @@ El modo estándar y **Deep Think** son independientes. La búsqueda normal usa u
 Deep Think reevalúa la suficiencia cada tres lecturas y tras tres lotes sin nuevos resultados materiales, además de compactar si llena el contexto. Puede seguir investigando cuando quedan lagunas relevantes. Cada checkpoint aceptado se guarda antes de continuar; reformular las mismas lagunas o releer el mismo pasaje no cuenta como avance. Si después agota el tiempo o la salida, la redacción conserva el último registro validado y expresa la incertidumbre en los puntos pendientes, sin presentar el trabajo como completo.
 
 Deep Think contrasta fuentes independientes para afirmaciones volátiles, hipótesis alternativas y contradicciones materiales. Puede pedir precisión si falta un dato esencial; errores y lagunas no se presentan como una respuesta terminada. Para Chrome, revisa además los límites operativos y restricciones de lectura de la [guía WSL](../deploy/wsl/WEB_BROWSER.md).
+
+### Diagnóstico de lectura
+
+Buscar URLs y abrir páginas son fases independientes. El buscador puede funcionar aunque Chrome falte o no pueda iniciar su sandbox en el contenedor. Los fallos completos de lectura registran un WARNING administrativo con código, fase, estado HTTP e intentos, sin URL, consulta ni excepciones crudas; se conservan los errores estructurados que recibe el investigador. Consulta la [preparación de Docker/Coolify](../deploy/docker/README.md) para Chrome, usuario no root y permisos de volúmenes.
 
 ### Evidencia, privacidad y límites
 

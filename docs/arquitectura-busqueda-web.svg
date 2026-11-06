@@ -9,7 +9,7 @@
 <tspan x="70" dy="0">Cat’s Bot · cómo investiga y por qué puede dudar</tspan>
 </text>
 <text x="70" y="127" class="subtitle">
-<tspan x="70" dy="0">6 nov 2026 · propuesta local DDG → Yahoo secuencial · pendiente de despliegue en Coolify</tspan>
+<tspan x="70" dy="0">6 nov 2026 · DDG → Yahoo desplegado · Chrome/Docker: candidato local pendiente de validar</tspan>
 </text>
 <rect x="70" y="175" width="1660" height="112" rx="19" fill="#e9f1ff" stroke="#b0c7ed" stroke-width="2"/>
 <text x="100" y="218" class="label">
@@ -198,6 +198,6 @@
 <tspan x="70" dy="0">Lectura del mapa: azul = decisión/evidencia · verde = web pública · violeta = investigación iterativa · ámbar = límite de respuesta</tspan>
 </text>
 <text x="70" y="2472" class="small">
-<tspan x="70" dy="0">Fuentes y límites detallados: docs/arquitectura-busqueda-web.md · Cambio local pendiente; no verifica configuración ni respuestas reales del VPS.</tspan>
+<tspan x="70" dy="0">Fuentes y límites detallados: docs/arquitectura-busqueda-web.md · Chrome/Docker pendiente; no verifica configuración ni respuestas reales del VPS.</tspan>
 </text>
 </svg>

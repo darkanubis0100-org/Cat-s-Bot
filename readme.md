@@ -39,8 +39,8 @@ Cat's Bot reúne herramientas de moderación, conversación con IA, radio y gest
 ## Configuración y despliegue
 
 1. Revisa [`.env.example`](./.env.example) para conocer las variables de entorno.
-2. Para una instalación en WSL, sigue la [guía de despliegue](./deploy/wsl/README.md).
-3. Para habilitar lectura web con Chrome, consulta la [guía del navegador](./deploy/wsl/WEB_BROWSER.md).
+2. Para Docker/Coolify, revisa la [imagen, Chrome y preparación de volúmenes](./deploy/docker/README.md).
+3. Para una instalación en WSL, sigue la [guía de despliegue](./deploy/wsl/README.md) y la [guía del navegador](./deploy/wsl/WEB_BROWSER.md).
 
 ## IA y guías
 

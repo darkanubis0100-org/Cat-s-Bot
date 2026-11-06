@@ -369,6 +369,20 @@ class BrowserHarnessTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(self.web._browser)
                 self.assertIsNone(self.web._playwright)
 
+    async def test_failed_read_logs_safe_failure_category_without_source_or_exception_text(self):
+        from cogs._web_access import WebReadError
+        self.launch.side_effect = RuntimeError("sensitive browser detail https://source.example/private")
+        with self.assertLogs("cogs._web_access", level="WARNING") as logs:
+            with self.assertRaises(WebReadError):
+                await self.web.read_webpage("https://example.com/")
+        rendered = "\n".join(logs.output)
+        self.assertIn("code=browser_launch_failed stage=browser_launch", rendered)
+        self.assertIn("http_status=None attempts=1", rendered)
+        self.assertNotIn("sensitive", rendered)
+        self.assertNotIn("https://", rendered)
+        self.assertIsNone(self.web._browser)
+        self.assertIsNone(self.web._playwright)
+
     async def test_global_timeout_does_not_restart_navigation_or_return_partial_text(self):
         from cogs._web_access import WebReadError
         async def blocked_navigation(*args, **kwargs):

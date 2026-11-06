@@ -521,4 +521,6 @@ class WebAccess:
                     self._playwright = None
                 await proxy.close()
             error.url = normalized
+            logger.warning("Public web read failed code=%s stage=%s http_status=%s attempts=%d",
+                           error.code, error.stage, error.http_status, error.attempts)
             raise error from None
