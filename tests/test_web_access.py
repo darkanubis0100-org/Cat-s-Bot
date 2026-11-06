@@ -112,7 +112,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(cached["results"][0]["url"], "https://example.com/x")
             self.assertEqual(cached["retrieved_at_utc"], result["retrieved_at_utc"])
             self.assertEqual(cached["source_kind"], "search_snippets")
-            search.assert_called_once_with("test")
+            search.assert_called_once_with("test", "duckduckgo")
         await web.close()
 
     async def test_query_and_lifecycle_errors_are_safe_and_lazy(self):
@@ -131,13 +131,143 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await web.read_webpage("https://example.com")
 
-    def test_ddgs_uses_only_the_two_supported_search_backends(self):
-        client = Mock()
-        constructor = Mock(return_value=client)
-        with patch.dict("sys.modules", {"ddgs": Mock(DDGS=constructor)}):
-            WebAccess._search("short query")
-        constructor.assert_called_once_with(timeout=8)
-        client.text.assert_called_once_with("short query", backend="duckduckgo,brave", max_results=5)
+    async def test_primary_success_does_not_call_fallback_and_deduplicates_public_urls(self):
+        web = WebAccess()
+        rows = [{"href": "https://Example.com:443/x#one", "title": "First"},
+                {"href": "https://example.com/x#two", "title": "Duplicate"}]
+        with patch.object(web, "_search", Mock(return_value=rows)) as search, \
+             patch("cogs._web_access._resolve", AsyncMock(return_value=["1.1.1.1"])):
+            result = await web.search_web("public query")
+        self.assertEqual([row["url"] for row in result["results"]], ["https://example.com/x"])
+        search.assert_called_once_with("public query", "duckduckgo")
+        await web.close()
+
+    async def test_primary_error_empty_malformed_and_filtered_results_use_validated_fallback(self):
+        cases = [RuntimeError("sensitive failure"), [], None, [None, "not a row", {}],
+                 [{"href": "http://127.0.0.1"}, {"href": "https://private.example/x"}]]
+        for rows in cases:
+            with self.subTest(rows=type(rows).__name__):
+                web = WebAccess()
+                fallback = [None, {"href": "http://10.0.0.1"},
+                            {"href": "https://example.com/source#fragment", "title": "Public", "body": "Snippet"}]
+                async def resolve(host, port):
+                    if host == "private.example":
+                        raise ValueError("private DNS")
+                    return ["1.1.1.1"]
+                with patch.object(web, "_search", Mock(side_effect=[rows, fallback])) as search, \
+                     patch("cogs._web_access._resolve", resolve):
+                    result = await web.search_web("public query")
+                    again = await web.search_web("public query")
+                self.assertEqual(result["results"], again["results"])
+                self.assertEqual(result["results"][0]["url"], "https://example.com/source")
+                self.assertEqual(result["source_kind"], "search_snippets")
+                self.assertEqual([call.args for call in search.call_args_list],
+                                 [("public query", "duckduckgo"), ("public query", "yahoo")])
+                await web.close()
+
+    async def test_failed_or_empty_backends_are_not_cached_and_hide_raw_errors(self):
+        for primary, fallback in (([], []), (RuntimeError("private detail"), RuntimeError("secret")),
+                                   ([], [{"href": "http://127.0.0.1"}])):
+            with self.subTest(primary=type(primary).__name__):
+                web = WebAccess()
+                with patch.object(web, "_search", Mock(side_effect=[primary, fallback, primary, fallback])) as search:
+                    for _ in range(2):
+                        with self.assertRaisesRegex(ValueError, "buscadores públicos") as error:
+                            await web.search_web("public query")
+                        self.assertNotIn("secret", str(error.exception))
+                        self.assertNotIn("private", str(error.exception))
+                self.assertEqual(search.call_count, 4)
+                await web.close()
+
+    async def test_search_diagnostics_hide_queries_urls_and_exception_messages(self):
+        web = WebAccess()
+        with patch.object(web, "_search", Mock(side_effect=RuntimeError("sensitive detail"))), \
+             self.assertLogs("cogs._web_access", level="DEBUG") as logs:
+            with self.assertRaises(ValueError):
+                await web.search_web("public query")
+        rendered = "\n".join(logs.output)
+        self.assertIn("backend=duckduckgo outcome=RuntimeError", rendered)
+        self.assertIn("backend=yahoo outcome=RuntimeError", rendered)
+        self.assertNotIn("sensitive detail", rendered)
+        self.assertNotIn("public query", rendered)
+        await web.close()
+
+    async def test_missing_dependency_retains_the_installation_hint(self):
+        web = WebAccess()
+        with patch.object(web, "_search", Mock(side_effect=ImportError("private install path"))) as search:
+            with self.assertRaisesRegex(ValueError, "instalar la dependencia ddgs") as error:
+                await web.search_web("public query")
+        self.assertEqual(search.call_count, 2)
+        self.assertNotIn("private", str(error.exception))
+        await web.close()
+
+    async def test_primary_timeout_reserves_time_for_fallback_without_waiting_for_worker(self):
+        import threading
+        release, started = threading.Event(), threading.Event()
+        def search(query, backend):
+            if backend == "duckduckgo":
+                started.set()
+                release.wait(2)
+                return []
+            return [{"href": "https://example.com"}]
+        web = WebAccess()
+        try:
+            with patch("cogs._web_access.SEARCH_ATTEMPT_TIMEOUT", 0.02), \
+                 patch.object(web, "_search", Mock(side_effect=search)) as search_mock, \
+                 patch("cogs._web_access._resolve", AsyncMock(return_value=["1.1.1.1"])):
+                result = await asyncio.wait_for(web.search_web("public query"), 0.5)
+                self.assertTrue(started.is_set())
+                self.assertEqual([call.args[1] for call in search_mock.call_args_list], ["duckduckgo", "yahoo"])
+                self.assertTrue(result["results"])
+        finally:
+            release.set()
+            await web.close()
+
+    async def test_backend_timeout_and_external_cancellation_do_not_retry_or_continue(self):
+        import threading
+        release = threading.Event()
+        def search(query, backend):
+            if backend == "yahoo":
+                release.wait(2)
+            return []
+        web = WebAccess()
+        try:
+            with patch("cogs._web_access.SEARCH_ATTEMPT_TIMEOUT", 0.01), \
+                 patch.object(web, "_search", Mock(side_effect=search)) as search_mock:
+                with self.assertRaisesRegex(ValueError, "buscadores públicos"):
+                    await asyncio.wait_for(web.search_web("public query"), 0.5)
+                self.assertEqual(search_mock.call_count, 2)
+            with patch.object(web, "_search", Mock(side_effect=asyncio.CancelledError)) as search_mock:
+                with self.assertRaises(asyncio.CancelledError):
+                    await web.search_web("public query")
+                search_mock.assert_called_once()
+        finally:
+            release.set()
+            await web.close()
+
+    def test_ddgs_uses_only_the_requested_backend_with_a_bounded_timeout(self):
+        for backend in ("duckduckgo", "yahoo"):
+            with self.subTest(backend=backend):
+                client = Mock()
+                constructor = Mock(return_value=client)
+                engines = {"ddgs": Mock(DDGS=constructor),
+                           "ddgs.engines.duckduckgo": Mock(Duckduckgo=SimpleNamespace(disabled=False)),
+                           "ddgs.engines.yahoo": Mock(Yahoo=SimpleNamespace(disabled=False))}
+                with patch.dict("sys.modules", engines):
+                    WebAccess._search("short query", backend)
+                constructor.assert_called_once_with(timeout=4)
+                client.text.assert_called_once_with("short query", backend=backend, max_results=5)
+
+    def test_disabled_backend_does_not_silently_use_auto(self):
+        for backend in ("duckduckgo", "yahoo"):
+            constructor = Mock()
+            engines = {"ddgs": Mock(DDGS=constructor),
+                       "ddgs.engines.duckduckgo": Mock(Duckduckgo=SimpleNamespace(disabled=True)),
+                       "ddgs.engines.yahoo": Mock(Yahoo=SimpleNamespace(disabled=True))}
+            with self.subTest(backend=backend), patch.dict("sys.modules", engines):
+                with self.assertRaises(ValueError):
+                    WebAccess._search("public query", backend)
+            constructor.assert_not_called()
 
     async def test_timeout_during_driver_start_closes_context_manager(self):
         async def blocked_start():

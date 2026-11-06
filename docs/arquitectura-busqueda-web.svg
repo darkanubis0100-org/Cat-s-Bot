@@ -1,0 +1,203 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="2520" viewBox="0 0 1800 2520" role="img" aria-labelledby="title desc">
+<title id="title">Arquitectura actual de búsqueda web de Cat’s Bot</title>
+<desc id="desc">Desde la conversación, un modelo decide si pide investigación pública. El modo estándar tiene cuotas y Deep Think consolida evidencia y continúa mientras haya avance. El redactor final recibe evidencia pero no herramientas para volver a buscar. La búsqueda habilitada no garantiza una respuesta verificada.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#52677d"/></marker></defs>
+<style>text{font-family:Segoe UI,Arial,sans-serif;fill:#172b42}.title{font-size:43px;font-weight:700}.subtitle{font-size:23px;fill:#52677d}.label{font-size:19px;font-weight:700;letter-spacing:1px}.heading{font-size:28px;font-weight:700}.body{font-size:24px}.small{font-size:20px;fill:#52677d}.edge{fill:none;stroke:#52677d;stroke-width:3;marker-end:url(#arrow)}.loop{fill:none;stroke:#6a55a3;stroke-width:3;stroke-dasharray:9 6;marker-end:url(#arrow)}</style>
+<rect width="1800" height="2520" fill="#f5f7fb"/>
+
+<text x="70" y="83" class="title">
+<tspan x="70" dy="0">Cat’s Bot · cómo investiga y por qué puede dudar</tspan>
+</text>
+<text x="70" y="127" class="subtitle">
+<tspan x="70" dy="0">6 nov 2026 · propuesta local DDG → Yahoo secuencial · pendiente de despliegue en Coolify</tspan>
+</text>
+<rect x="70" y="175" width="1660" height="112" rx="19" fill="#e9f1ff" stroke="#b0c7ed" stroke-width="2"/>
+<text x="100" y="218" class="label">
+<tspan x="100" dy="0">IDEA CLAVE</tspan>
+</text>
+<text x="100" y="255" class="body">
+<tspan x="100" dy="0">Internet habilita herramientas. La respuesta depende de que el modelo las pida y encuentre evidencia útil.</tspan>
+</text>
+<rect x="70" y="345" width="490" height="185" rx="19" fill="#ffffff" stroke="#c5d0dc" stroke-width="2"/>
+<text x="98" y="385" class="heading">
+<tspan x="98" dy="0">1 · Conversación autorizada</tspan>
+</text>
+<text x="98" y="428" class="body">
+<tspan x="98" dy="0">Mensaje + contexto e historial</tspan>
+<tspan x="98" dy="34">Reglas, recuerdos e imágenes</tspan>
+<tspan x="98" dy="34">Permisos y vigencia comprobados</tspan>
+</text>
+<rect x="675" y="345" width="490" height="185" rx="19" fill="#eaf1ff" stroke="#96b6e7" stroke-width="2"/>
+<text x="703" y="385" class="heading">
+<tspan x="703" dy="0">2 · El modelo decide</tspan>
+</text>
+<text x="703" y="428" class="body">
+<tspan x="703" dy="0">¿Necesita hechos públicos actuales?</tspan>
+<tspan x="703" dy="34">¿El usuario pidió buscar?</tspan>
+<tspan x="703" dy="34">También decide con /deepthink</tspan>
+</text>
+<rect x="1250" y="345" width="480" height="185" rx="19" fill="#fff1e4" stroke="#e6bd8c" stroke-width="2"/>
+<text x="1278" y="385" class="heading">
+<tspan x="1278" dy="0">Sin petición de investigación</tspan>
+</text>
+<text x="1278" y="428" class="body">
+<tspan x="1278" dy="0">No se ejecuta búsqueda web.</tspan>
+<tspan x="1278" dy="34">Responde con el contexto disponible.</tspan>
+<tspan x="1278" dy="34">Puede reconocer que faltan datos.</tspan>
+</text>
+<path d="M560 437 H675" class="edge"/>
+<path d="M1165 437 H1250" class="edge"/>
+<text x="1184" y="416" class="small">
+<tspan x="1184" dy="0">no</tspan>
+</text>
+<path d="M920 530 V590" class="edge"/>
+<text x="936" y="565" class="small">
+<tspan x="936" dy="0">sí</tspan>
+</text>
+<rect x="70" y="590" width="530" height="155" rx="19" fill="#ffffff" stroke="#c5d0dc" stroke-width="2"/>
+<text x="98" y="630" class="heading">
+<tspan x="98" dy="0">Frontera de privacidad</tspan>
+</text>
+<text x="98" y="673" class="body">
+<tspan x="98" dy="0">El investigador no recibe el historial.</tspan>
+<tspan x="98" dy="31">Sin tema público claro: pide precisión.</tspan>
+<tspan x="98" dy="31">Brief inválido: 1 reparación; luego error.</tspan>
+</text>
+<rect x="675" y="590" width="1055" height="155" rx="19" fill="#e7f6f3" stroke="#8fc7bb" stroke-width="2"/>
+<text x="703" y="630" class="heading">
+<tspan x="703" dy="0">3 · Brief público mínimo y validado</tspan>
+</text>
+<text x="703" y="673" class="body">
+<tspan x="703" dy="0">Tema ≤ 200 caracteres + pregunta autónoma ≤ 600.</tspan>
+<tspan x="703" dy="31">Se excluyen perfiles, reglas, IDs, datos personales y credenciales.</tspan>
+<tspan x="703" dy="31">La investigación usa Strata y requiere Internet habilitado.</tspan>
+</text>
+<path d="M920 745 V790 H465 V830" class="edge"/>
+<path d="M920 790 H1335 V830" class="edge"/>
+<rect x="70" y="830" width="790" height="330" rx="19" fill="#eaf1ff" stroke="#96b6e7" stroke-width="2"/>
+<text x="100" y="870" class="heading">
+<tspan x="100" dy="0">4A · Búsqueda estándar</tspan>
+</text>
+<text x="100" y="916" class="small">
+<tspan x="100" dy="0">Conversación normal · recuperación rápida</tspan>
+</text>
+<text x="100" y="958" class="body">
+<tspan x="100" dy="0">• Hasta 2 búsquedas (≤ 5 resultados por llamada).</tspan>
+<tspan x="100" dy="33">• N lecturas: 1–20; por defecto 3; cuentan fallos.</tspan>
+<tspan x="100" dy="33">• Hasta max(4, N + 1) rondas y 30 s en total.</tspan>
+<tspan x="100" dy="33">• Modelo: 1024 tokens de salida, sin razonamiento;</tspan>
+<tspan x="100" dy="33">  hasta 15 s por llamada, dentro del plazo de 30 s.</tspan>
+<tspan x="100" dy="33">• Subir N no amplía las 2 búsquedas ni los 30 s.</tspan>
+</text>
+<rect x="940" y="830" width="790" height="330" rx="19" fill="#f0eafb" stroke="#b7a2d9" stroke-width="2"/>
+<text x="970" y="870" class="heading">
+<tspan x="970" dy="0">4B · Deep Think · /deepthink consulta</tspan>
+</text>
+<text x="970" y="916" class="small">
+<tspan x="970" dy="0">Permiso + Internet + cupo diario; solo esa consulta</tspan>
+</text>
+<text x="970" y="958" class="body">
+<tspan x="970" dy="0">• Sin cuota total de búsquedas, páginas, rondas o tiempo.</tspan>
+<tspan x="970" dy="33">• Checkpoint cada 3 lecturas o 3 lotes sin avance;</tspan>
+<tspan x="970" dy="33">  también si el contexto ya no admite más resultados.</tspan>
+<tspan x="970" dy="33">• Continúa desde el registro validado si quedan lagunas.</tspan>
+<tspan x="970" dy="33">• Termina por suficiencia o precisión esencial del usuario.</tspan>
+<tspan x="970" dy="33">• Sin avance/timeout/salida agotada: último checkpoint.</tspan>
+</text>
+<path d="M465 1160 V1200 H570 V1240" class="edge"/>
+<path d="M1335 1160 V1200 H570" class="edge"/>
+<text x="700" y="1220" class="small">
+<tspan x="700" dy="0">Ambos modos usan las mismas herramientas públicas</tspan>
+</text>
+<rect x="70" y="1240" width="1000" height="260" rx="19" fill="#e7f6f3" stroke="#8fc7bb" stroke-width="2"/>
+<text x="100" y="1282" class="heading">
+<tspan x="100" dy="0">5 · Buscar descubre URLs · leer obtiene evidencia</tspan>
+</text>
+<text x="100" y="1328" class="body">
+<tspan x="100" dy="0">search_web → DuckDuckGo; Yahoo solo ante fallo o sin resultados válidos.</tspan>
+<tspan x="100" dy="33">read_webpage → Chrome Headless → texto visible, fechas y enlaces.</tspan>
+<tspan x="100" dy="33">Solo web pública; valida DNS, redirecciones y solicitudes de la página.</tspan>
+<tspan x="100" dy="33">Sin login, CAPTCHA, sitios privados ni adjuntos de Discord.</tspan>
+<tspan x="100" dy="33">Chrome: 20 s/página, 64 solicitudes y 8 MiB; 1 reintento transitorio.</tspan>
+</text>
+<rect x="1130" y="1240" width="600" height="260" rx="19" fill="#ffffff" stroke="#c5d0dc" stroke-width="2"/>
+<text x="1160" y="1282" class="heading">
+<tspan x="1160" dy="0">Presupuesto ≠ número de fuentes</tspan>
+</text>
+<text x="1160" y="1328" class="body">
+<tspan x="1160" dy="0">Ventana del modelo − conversación,</tspan>
+<tspan x="1160" dy="33">imágenes, salida y margen de seguridad.</tspan>
+<tspan x="1160" dy="33">Hasta 60 % del espacio restante se</tspan>
+<tspan x="1160" dy="33">asigna a pasajes (máximo 192 000 bytes).</tspan>
+<tspan x="1160" dy="33">Si no hay contador: estima con bytes UTF-8.</tspan>
+</text>
+<path d="M570 1500 V1580" class="edge"/>
+<text x="590" y="1546" class="small">
+<tspan x="590" dy="0">Solo páginas realmente leídas aportan respaldo</tspan>
+</text>
+<rect x="70" y="1580" width="1000" height="250" rx="19" fill="#eaf1ff" stroke="#96b6e7" stroke-width="2"/>
+<text x="100" y="1622" class="heading">
+<tspan x="100" dy="0">6 · Evidencia, evaluación y checkpoint</tspan>
+</text>
+<text x="100" y="1668" class="body">
+<tspan x="100" dy="0">Estándar: pasajes seleccionados; informe consolidado opcional.</tspan>
+<tspan x="100" dy="33">Deep: registro de hechos respaldados, desconocidos o contradictorios.</tspan>
+<tspan x="100" dy="33">El código valida citas literales por URL; no demuestra su conclusión.</tspan>
+<tspan x="100" dy="33">El LLM declara suficiencia; el código exige respaldo y ausencia de lagunas.</tspan>
+<tspan x="100" dy="33">Al compactar conserva el registro validado y descarta el replay anterior.</tspan>
+</text>
+<rect x="1130" y="1580" width="600" height="250" rx="19" fill="#ffffff" stroke="#c5d0dc" stroke-width="2"/>
+<text x="1160" y="1622" class="heading">
+<tspan x="1160" dy="0">Continuidad temporal</tspan>
+</text>
+<text x="1160" y="1668" class="body">
+<tspan x="1160" dy="0">Guarda cada checkpoint aceptado.</tspan>
+<tspan x="1160" dy="33">Ámbito: servidor + canal + usuario.</tspan>
+<tspan x="1160" dy="33">Hasta 64 archivos de 64 000 bytes; 1 h.</tspan>
+<tspan x="1160" dy="33">Revalida permisos, configuración y</tspan>
+<tspan x="1160" dy="33">mensajes antes de reutilizar o guardar.</tspan>
+</text>
+<path d="M1070 1720 H1100 V1535 H1760 V995 H1730" class="loop"/>
+<text x="1160" y="1558" class="small">
+<tspan x="1160" dy="0">Deep: nuevas fuentes/pasajes + lagunas → otro ciclo</tspan>
+</text>
+<path d="M570 1830 V1910" class="edge"/>
+<text x="590" y="1876" class="small">
+<tspan x="590" dy="0">Suficiente, fin del modo rápido o último checkpoint incompleto</tspan>
+</text>
+<rect x="70" y="1910" width="1000" height="185" rx="19" fill="#fff1e4" stroke="#e6bd8c" stroke-width="2"/>
+<text x="100" y="1952" class="heading">
+<tspan x="100" dy="0">7 · Redactor final · sin herramientas de búsqueda</tspan>
+</text>
+<text x="100" y="1998" class="body">
+<tspan x="100" dy="0">Recibe conversación autorizada + pasajes o registro de evidencia.</tspan>
+<tspan x="100" dy="33">Redacta desde lo respaldado; no completa hechos actuales de memoria.</tspan>
+<tspan x="100" dy="33">Si detecta una laguna, en este turno ya no puede buscar otra vez.</tspan>
+</text>
+<rect x="1130" y="1910" width="600" height="185" rx="19" fill="#fff1e4" stroke="#e6bd8c" stroke-width="2"/>
+<text x="1160" y="1952" class="heading">
+<tspan x="1160" dy="0">Un límite reduce la evidencia</tspan>
+</text>
+<text x="1160" y="1998" class="body">
+<tspan x="1160" dy="0">Recortes de contexto, páginas bloqueadas,</tspan>
+<tspan x="1160" dy="33">errores o fuentes antiguas pueden dejar</tspan>
+<tspan x="1160" dy="33">sin respaldo el dato concreto solicitado.</tspan>
+</text>
+<path d="M570 2095 V2170" class="edge"/>
+<rect x="70" y="2170" width="1660" height="215" rx="19" fill="#ffffff" stroke="#a9bdcf" stroke-width="2"/>
+<text x="100" y="2215" class="heading">
+<tspan x="100" dy="0">8 · Respuesta al usuario</tspan>
+</text>
+<text x="100" y="2262" class="body">
+<tspan x="100" dy="0">Con respaldo → responde directamente. Sin un dato esencial → acota la duda a ese dato o pide precisión.</tspan>
+<tspan x="100" dy="33">Las instrucciones ya prohíben avisos globales de incertidumbre por un fallo o por sufficient=false.</tspan>
+<tspan x="100" dy="33">Los enlaces no se muestran por defecto; se incluyen si el usuario los pide. Se revalida antes de publicar.</tspan>
+<tspan x="100" dy="33">Decir «no puedo afirmar X» puede ser correcto por falta de evidencia; repetirlo sin necesidad puede ser conducta del modelo.</tspan>
+</text>
+<text x="70" y="2435" class="small">
+<tspan x="70" dy="0">Lectura del mapa: azul = decisión/evidencia · verde = web pública · violeta = investigación iterativa · ámbar = límite de respuesta</tspan>
+</text>
+<text x="70" y="2472" class="small">
+<tspan x="70" dy="0">Fuentes y límites detallados: docs/arquitectura-busqueda-web.md · Cambio local pendiente; no verifica configuración ni respuestas reales del VPS.</tspan>
+</text>
+</svg>

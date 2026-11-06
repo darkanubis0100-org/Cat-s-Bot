@@ -12,7 +12,9 @@ La investigación web es una función opcional de Strata. La búsqueda se limita
 
 ## Investigación web opcional
 
-`ai_web_enabled` activa búsqueda pública con DuckDuckGo/Brave y lectura mediante Chrome Headless, solo con Strata. Está apagado por defecto. Requiere las dependencias e instalación descritas en la [guía del navegador WSL](../deploy/wsl/WEB_BROWSER.md). No usa el perfil ni sesiones del navegador del usuario; solo permite lectura pública, sin login, formularios ni acciones externas.
+`ai_web_enabled` activa búsqueda pública con DuckDuckGo/Yahoo y lectura mediante Chrome Headless, solo con Strata. Está apagado por defecto. Requiere las dependencias e instalación descritas en la [guía del navegador WSL](../deploy/wsl/WEB_BROWSER.md). No usa el perfil ni sesiones del navegador del usuario; solo permite lectura pública, sin login, formularios ni acciones externas.
+
+Cada consulta prueba primero DuckDuckGo y usa Yahoo solo si falla o no entrega resultados públicos válidos. Cada motor dispone de hasta 6 segundos, con timeout de red de 4 segundos, dentro del plazo de 15 segundos de la herramienta. Los resultados se validan por URL y DNS públicos, se eliminan duplicados y solo los éxitos se guardan en caché durante cinco minutos. El fallback interno no gasta otra de las dos consultas del planificador ni amplía los 30 segundos del modo estándar. Si ambos fallan, se devuelve un error de herramienta; no se presenta una lista vacía como búsqueda útil. Los diagnósticos DEBUG registran motor, categoría del resultado y cantidad, sin consultas, URLs ni mensajes de error del proveedor.
 
 ### Flujo
 

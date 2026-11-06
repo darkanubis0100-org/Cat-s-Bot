@@ -1,7 +1,7 @@
 # Chrome Headless opcional para las herramientas web
 
-El acceso web se activa por servidor en el panel de IA. DuckDuckGo y Brave usan `ddgs`
-con los backends acotados `duckduckgo,brave` (sin selección `auto`); la lectura usa Google Chrome instalado, por el canal
+El acceso web se activa por servidor en el panel de IA. DuckDuckGo y Yahoo usan `ddgs`
+primero con `duckduckgo` y, solo ante error o ausencia de resultados públicos válidos, con `yahoo` (sin selección `auto`). Cada intento dispone de hasta 6 segundos, dentro de los 15 segundos de la herramienta; el fallback no consume otra consulta del planificador. La lectura usa Google Chrome instalado, por el canal
 `chrome` de Playwright. No se sustituye por Chromium ni se instala un navegador
 al arrancar el bot. Los errores de instalación, sandbox y bloqueo del sitio se
 devuelven como errores de herramienta. Las páginas y búsquedas no reciben la

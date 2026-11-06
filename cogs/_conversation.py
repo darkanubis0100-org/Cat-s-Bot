@@ -80,7 +80,7 @@ WEB_TOOLS = [{"type": "function", "function": {"name": name, "description": desc
     "parameters": {"type": "object", "properties": {argument: {"type": "string", "maxLength": limit}},
                    "required": [argument], "additionalProperties": False}}}
     for name, description, argument, limit in (
-        ("search_web", "Search public Internet information using DuckDuckGo and Brave. Never search private context or personal data.", "query", 300),
+        ("search_web", "Search public Internet information using DuckDuckGo and Yahoo. Never search private context or personal data.", "query", 300),
         ("read_webpage", "Read one ordinary public webpage using Chrome. No Discord attachments, private sites or actions.", "url", 2048))]
 
 

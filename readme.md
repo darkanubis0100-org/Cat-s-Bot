@@ -21,7 +21,7 @@ Cat's Bot reúne herramientas de moderación, conversación con IA, radio y gest
 | --- | --- |
 | 🛡️ Moderación | AutoMod, casos y configuración por servidor; moderación LLM opcional. |
 | 💬 IA | Chat Strata con recuerdos por ámbito y recuerdos personales opcionales; Gemini se conserva como alternativa. |
-| 🌐 Investigación | Búsqueda pública con DuckDuckGo/Brave y lectura mediante Chrome Headless. |
+| 🌐 Investigación | Búsqueda pública con DuckDuckGo/Yahoo y lectura mediante Chrome Headless. |
 | 🎵 Radio | Reproducción de audio en canales de voz. |
 | ⚙️ Panel | Configuración del bot y administración de funciones desde el navegador. |
 
@@ -34,7 +34,7 @@ Cat's Bot reúne herramientas de moderación, conversación con IA, radio y gest
 | Dashboard | React, Vite | Interfaz web de configuración. |
 | Datos | SQLite | Configuración, casos y estado persistente del bot. |
 | IA | Endpoint compatible con OpenAI; Gemini | Chat y moderación asistida según proveedor configurado. |
-| Web opcional | DuckDuckGo, Playwright y Chrome Headless | Búsqueda pública y lectura de páginas. |
+| Web opcional | DuckDuckGo/Yahoo, Playwright y Chrome Headless | Búsqueda pública y lectura de páginas. |
 
 ## Configuración y despliegue
 
