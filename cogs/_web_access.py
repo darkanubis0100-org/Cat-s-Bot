@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 
 MAX_TEXT = 128_000
 MAX_RESULTS = 5
-SEARCH_ATTEMPT_TIMEOUT = 6
-PAGE_TIMEOUT = 20
+SEARCH_ATTEMPT_TIMEOUT = 12
+PAGE_TIMEOUT = 60
 MAX_TRANSFER = 8 * 1024 * 1024
 MAX_REQUESTS = 64
 CHROME_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
@@ -104,7 +104,7 @@ async def _read_document(page, url, proxy, deadline):
         stage = "navigation"
         try:
             # Commit yields the HTTP result even if a subresource never finishes loading.
-            response = await page.goto(url, wait_until="commit", timeout=10_000)
+            response = await page.goto(url, wait_until="commit", timeout=30_000)
             latest_response[0] = latest_response[0] or response
             if response is None:
                 raise WebReadError("navigation_failed", "La navegación no devolvió una respuesta HTTP.")
@@ -368,11 +368,11 @@ class WebAccess:
                 return {**cached[1], "results": [dict(row) for row in cached[1]["results"]]}
             results, missing_dependencies = [], 0
             try:
-                async with asyncio.timeout(15):
+                async with asyncio.timeout(30):
                     for backend in ("duckduckgo", "yahoo"):
                         outcome = "empty"
                         try:
-                            # Reserve time for the fallback instead of letting one backend consume all 15 seconds.
+                            # Reserve time for the fallback instead of letting one backend consume all 30 seconds.
                             async with asyncio.timeout(SEARCH_ATTEMPT_TIMEOUT):
                                 rows = await asyncio.get_running_loop().run_in_executor(_SEARCH_EXECUTOR, self._search, query, backend)
                                 if not isinstance(rows, list):
@@ -425,7 +425,7 @@ class WebAccess:
         engine = {"duckduckgo": Duckduckgo, "yahoo": Yahoo}[backend]
         if engine.disabled:
             raise ValueError("El buscador no está disponible.")
-        return DDGS(timeout=4).text(query, backend=backend, max_results=MAX_RESULTS)
+        return DDGS(timeout=8).text(query, backend=backend, max_results=MAX_RESULTS)
 
     async def read_webpage(self, url: str, *, query: str = "", max_text: int = MAX_TEXT) -> dict:
         if self._closed:

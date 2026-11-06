@@ -1,7 +1,7 @@
 # Chrome Headless opcional para las herramientas web
 
 El acceso web se activa por servidor en el panel de IA. DuckDuckGo y Yahoo usan `ddgs`
-primero con `duckduckgo` y, solo ante error o ausencia de resultados públicos válidos, con `yahoo` (sin selección `auto`). Cada intento dispone de hasta 6 segundos, dentro de los 15 segundos de la herramienta; el fallback no consume otra consulta del planificador. La lectura usa Google Chrome instalado, por el canal
+primero con `duckduckgo` y, solo ante error o ausencia de resultados públicos válidos, con `yahoo` (sin selección `auto`). Cada intento dispone de hasta 12 segundos, dentro de los 30 segundos de la herramienta; el fallback no consume otra consulta del planificador. La lectura usa Google Chrome instalado, por el canal
 `chrome` de Playwright. No se sustituye por Chromium ni se instala un navegador
 al arrancar el bot. Los errores de instalación, sandbox y bloqueo del sitio se
 devuelven como errores de herramienta. Las páginas y búsquedas no reciben la
@@ -56,7 +56,7 @@ del documento final, incluidos sus errores.
 
 Límites: una operación web simultánea, 300 caracteres por búsqueda, cinco
 resultados de búsqueda, hasta 128.000 bytes UTF-8 de texto seleccionado por página
-(el planificador asigna normalmente hasta 32.000 o 64.000 según su presupuesto), 20 segundos por lectura,
+(el planificador asigna normalmente hasta 32.000 o 64.000 según su presupuesto), 60 segundos por lectura (30 segundos por navegación),
 8 MiB transferidos y 64 solicitudes/conexiones por página. Sitios con CAPTCHA,
 autenticación, antibots, otros puertos o grandes recursos pueden fallar; no se
 intenta eludir esos bloqueos. Se acepta contenido HTTP público como texto no
@@ -64,7 +64,7 @@ confiable. El proxy y el sandbox del navegador cubren navegación normal; no
 sustituyen aislamiento de red del SO frente a una vulnerabilidad de Chrome.
 
 Se permite una sola repetición para errores transitorios de navegación/red y
-HTTP 502/503/504, únicamente si queda tiempo. Comparte los mismos 20 segundos,
+HTTP 502/503/504, únicamente si queda tiempo. Comparte los mismos 60 segundos,
 8 MiB y 64 solicitudes del intento inicial. HTTP 401/403/429 y comprobaciones de
 acceso no se repiten. Cambiar el User-Agent no garantiza que un sitio acepte la
 lectura. Los errores devuelven categoría, etapa, estado HTTP cuando existe,

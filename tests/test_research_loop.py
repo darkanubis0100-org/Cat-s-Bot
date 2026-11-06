@@ -118,6 +118,43 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["page_evidence_untrusted"]), 3)
         self.assertIn("Memory: 16 GB.", json.dumps(result["page_evidence_untrusted"]))
 
+    async def test_standard_deadline_is_configurable_and_covers_planning_search_and_reading(self):
+        self.job["deep_think"] = False
+        loop = asyncio.get_running_loop()
+        url = "https://official.example/specifications"
+        for seconds in (30, 120):
+            with self.subTest(seconds=seconds):
+                self.fixture.db.set_ai_config(10, ai_web_timeout_seconds=seconds)
+                self.job["cfg"] = self.fixture.db.get_ai_config(10)
+                clock = [loop.time()]
+                async def advance(duration):
+                    clock[0] += duration
+                    await asyncio.sleep(0)
+                    await asyncio.sleep(0)
+                async def search(query):
+                    await advance(10)
+                    return {"results": [{"url": url}]}
+                async def read(target, **kwargs):
+                    await advance(25)
+                    return {"url": target, "text": "Memory: 16 GB."}
+                replies = [self.call("search_web", "Example specifications", 1),
+                           self.call("read_webpage", url, 2), {"content": "done"}]
+                async def provider(*args, **kwargs):
+                    async with asyncio.timeout(kwargs["timeout_seconds"]):
+                        await advance(20)
+                    return replies.pop(0)
+                self.engine.web = SimpleNamespace(search_web=search, read_webpage=read, close=AsyncMock())
+                with patch.object(loop, "time", lambda: clock[0]), patch.object(loop, "slow_callback_duration", 1000), \
+                     patch("cogs._conversation.request_completion", new=provider):
+                    result = await self.engine.web_context(self.job)
+                if seconds == 30:
+                    self.assertEqual(result["diagnostics"]["stop_reason"], "timeout")
+                    self.assertEqual(result["verified_source_urls"], [])
+                else:
+                    self.assertEqual(result["verified_source_urls"], [url])
+                    self.assertIn("Memory: 16 GB.", result["page_evidence_untrusted"][0]["text"])
+                    self.assertEqual(result["diagnostics"]["stop_reason"], "planner_stop")
+
     async def test_normal_retrieval_has_four_planner_rounds_and_timeout_is_not_sufficiency(self):
         self.job["deep_think"] = False
         self.engine.web = SimpleNamespace(search_web=AsyncMock(return_value={"results": []}), close=AsyncMock())

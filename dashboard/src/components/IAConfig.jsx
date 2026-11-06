@@ -54,7 +54,7 @@ function IASettings({ guildId, onNavigate }) {
 
   const save = async () => {
     if (!cfg || saving || loading) return;
-    for (const id of ["ia-web-max-sources", "ia-deep-think-daily-limit"]) {
+    for (const id of ["ia-web-max-sources", "ia-web-timeout-seconds", "ia-deep-think-daily-limit"]) {
       const input = document.getElementById(id);
       if (input && !input.reportValidity()) return;
     }
@@ -75,6 +75,7 @@ function IASettings({ guildId, onNavigate }) {
         ai_imagine_enabled: cfg.ai_imagine_enabled ? 1 : 0,
         ai_web_enabled: cfg.ai_web_enabled ? 1 : 0,
         ai_web_max_sources: cfg.ai_web_max_sources ?? 3,
+        ai_web_timeout_seconds: cfg.ai_web_timeout_seconds ?? 120,
         ai_deep_think: cfg.ai_deep_think ? 1 : 0,
         ai_deep_think_daily_limit: cfg.ai_deep_think_daily_limit ?? 3,
         ai_memory_messages: cfg.ai_memory_messages ?? 40};
@@ -349,7 +350,16 @@ function IASettings({ guildId, onNavigate }) {
             aria-describedby="ia-web-max-sources-help"
             value={cfg.ai_web_max_sources ?? 3}
             onChange={(e) => set("ai_web_max_sources", e.target.value === "" ? "" : Number(e.target.value))} />
-          <span id="ia-web-max-sources-help" className="muted-text">De 1 a 20. Máximo de páginas que el bot intentará consultar por respuesta. Puede terminar antes si ya tiene suficiente información o alcanza los 30 segundos del modo estándar. No cambia Deep Think.</span>
+          <span id="ia-web-max-sources-help" className="muted-text">De 1 a 20. Máximo de páginas que el bot intentará consultar por respuesta. Puede terminar antes si ya tiene suficiente información o alcanza el límite de tiempo configurado para el modo estándar. No cambia Deep Think.</span>
+        </div>}
+
+        {usingStrata && <div className="config-item">
+          <label htmlFor="ia-web-timeout-seconds">Tiempo máximo de investigación estándar (segundos)</label>
+          <input id="ia-web-timeout-seconds" type="number" min={30} max={600} step={1} required
+            aria-describedby="ia-web-timeout-seconds-help"
+            value={cfg.ai_web_timeout_seconds ?? 120}
+            onChange={(e) => set("ai_web_timeout_seconds", e.target.value === "" ? "" : Number(e.target.value))} />
+          <span id="ia-web-timeout-seconds-help" className="muted-text">De 30 a 600 segundos; 120 por defecto. Cubre planificar la investigación, buscar y leer páginas; no incluye la redacción final de la respuesta. No cambia Deep Think.</span>
         </div>}
 
         {usingStrata && <div className="config-item inline-check">

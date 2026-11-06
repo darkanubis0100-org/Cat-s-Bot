@@ -1,4 +1,6 @@
-"""Chat-only actor restrictions shared by Strata, Gemini and configuration storage."""
+"""Shared chat defaults and actor restrictions for providers and configuration storage."""
+
+DEFAULT_WEB_TIMEOUT_SECONDS = 120
 
 
 def normalize_restricted_roles(value):

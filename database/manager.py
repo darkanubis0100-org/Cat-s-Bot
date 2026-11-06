@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from llm_moderation_config import DEFAULT_LLM_CONFIG
-from ai_chat_config import normalize_restricted_roles
+from ai_chat_config import DEFAULT_WEB_TIMEOUT_SECONDS, normalize_restricted_roles
 
 logger = logging.getLogger("Database")
 
@@ -95,6 +95,7 @@ VALID_AI_CONFIG_COLUMNS = frozenset(
         "ai_provider",
         "ai_web_enabled",
         "ai_web_max_sources",
+        "ai_web_timeout_seconds",
         "ai_deep_think",
         "ai_deep_think_daily_limit",
         "ai_memory_messages",
@@ -2404,6 +2405,7 @@ class DatabaseManager:
             ("ai_provider", "VARCHAR(16) DEFAULT 'auto'"),
             ("ai_web_enabled", "INTEGER DEFAULT 0"),
             ("ai_web_max_sources", "INTEGER DEFAULT 3"),
+            ("ai_web_timeout_seconds", f"INTEGER DEFAULT {DEFAULT_WEB_TIMEOUT_SECONDS}"),
             ("ai_deep_think", "INTEGER DEFAULT 0"),
             ("ai_deep_think_daily_limit", "INTEGER DEFAULT 3"),
             ("ai_memory_messages", "INTEGER DEFAULT 40"),
@@ -4102,6 +4104,7 @@ class DatabaseManager:
         "ai_provider": "auto",
         "ai_web_enabled": 0,
         "ai_web_max_sources": 3,
+        "ai_web_timeout_seconds": DEFAULT_WEB_TIMEOUT_SECONDS,
         "ai_deep_think": 0,
         "ai_deep_think_daily_limit": 3,
         "ai_memory_messages": 40,
@@ -4124,6 +4127,8 @@ class DatabaseManager:
         result["guild_id"] = guild_id
         if row:
             result.update(row)
+        if result["ai_web_timeout_seconds"] is None:
+            result["ai_web_timeout_seconds"] = DEFAULT_WEB_TIMEOUT_SECONDS
         restricted = result["ai_restricted_role_ids"]
         result["ai_restricted_role_ids"] = json.loads(restricted) if isinstance(restricted, str) else list(restricted or [])
         return result
@@ -4146,6 +4151,11 @@ class DatabaseManager:
             type(kwargs["ai_web_max_sources"]) is not int or not 1 <= kwargs["ai_web_max_sources"] <= 20
         ):
             raise ValueError("ai_web_max_sources debe ser un entero entre 1 y 20")
+
+        if "ai_web_timeout_seconds" in kwargs and (
+            type(kwargs["ai_web_timeout_seconds"]) is not int or not 30 <= kwargs["ai_web_timeout_seconds"] <= 600
+        ):
+            raise ValueError("ai_web_timeout_seconds debe ser un entero entre 30 y 600")
 
         if "ai_deep_think_daily_limit" in kwargs and (
             type(kwargs["ai_deep_think_daily_limit"]) is not int

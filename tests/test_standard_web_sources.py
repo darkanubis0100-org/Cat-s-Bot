@@ -20,6 +20,7 @@ class StandardWebSourcesConfigTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_default_and_admin_roundtrip_are_guild_scoped_and_preserve_other_settings(self):
         self.assertEqual((await get_ia_config(10, self.db, {}))["ai_web_max_sources"], 3)
+        self.assertEqual((await get_ia_config(10, self.db, {}))["ai_web_timeout_seconds"], 120)
         self.db.set_ai_config(10, ai_deep_think_daily_limit=7, ai_restricted_role_ids=["44"])
         for value in (1, 20):
             result = await patch_ia_config(10, {"ai_web_max_sources": value}, None, self.db, None, {})
@@ -27,7 +28,14 @@ class StandardWebSourcesConfigTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["ai_deep_think_daily_limit"], 7)
             self.assertEqual(result["ai_restricted_role_ids"], ["44"])
             self.assertEqual((await get_ia_config(10, self.db, {}))["ai_web_max_sources"], value)
+        for seconds in (30, 600):
+            result = await patch_ia_config(10, {"ai_web_timeout_seconds": seconds}, None, self.db, None, {})
+            self.assertEqual(result["ai_web_timeout_seconds"], seconds)
+            self.assertEqual((await get_ia_config(10, self.db, {}))["ai_web_timeout_seconds"], seconds)
+            self.assertEqual(result["ai_deep_think_daily_limit"], 7)
+            self.assertEqual(result["ai_web_max_sources"], 20)
         self.assertEqual(self.db.get_ai_config(11)["ai_web_max_sources"], 3)
+        self.assertEqual(self.db.get_ai_config(11)["ai_web_timeout_seconds"], 120)
         self.assertIs(inspect.signature(get_ia_config).parameters["_user"].default.dependency, require_guild_admin)
         self.assertIs(inspect.signature(patch_ia_config).parameters["user"].default.dependency, require_guild_admin)
 
@@ -43,18 +51,28 @@ class StandardWebSourcesConfigTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(caught.exception.status_code, 400)
                 self.assertEqual(self.db.get_ai_config(10), before)
 
+        for value in (29, 601, 0, -1, True, False, 120.0, "120", None, [], {}):
+            with self.subTest(timeout=value):
+                with self.assertRaises(ValueError):
+                    self.db.set_ai_config(10, ai_enabled=0, ai_web_timeout_seconds=value)
+                with self.assertRaises(HTTPException) as caught:
+                    await patch_ia_config(10, {"ai_enabled": 0, "ai_web_timeout_seconds": value}, None, self.db, None, {})
+                self.assertEqual(caught.exception.status_code, 400)
+                self.assertEqual(self.db.get_ai_config(10), before)
+
     async def test_persistence_and_additive_legacy_migration_keep_existing_values(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "config.db"
             db = database(path)
             try:
-                db.set_ai_config(10, ai_web_max_sources=8, ai_deep_think=1)
+                db.set_ai_config(10, ai_web_max_sources=8, ai_deep_think=1, ai_web_timeout_seconds=240)
             finally:
                 db._sqlite_conn.close()
             reopened = database(path)
             try:
                 self.assertEqual(reopened.get_ai_config(10)["ai_web_max_sources"], 8)
                 self.assertEqual(reopened.get_ai_config(10)["ai_deep_think"], 1)
+                self.assertEqual(reopened.get_ai_config(10)["ai_web_timeout_seconds"], 240)
             finally:
                 reopened._sqlite_conn.close()
         legacy = database()
@@ -65,5 +83,8 @@ class StandardWebSourcesConfigTests(unittest.IsolatedAsyncioTestCase):
             legacy._migrate_ai_config()
             self.assertEqual(legacy.get_ai_config(10)["ai_web_max_sources"], 3)
             self.assertEqual(legacy.get_ai_config(10)["ai_enabled"], 0)
+            self.assertEqual(legacy.get_ai_config(10)["ai_web_timeout_seconds"], 120)
+            legacy._sqlite_conn.execute("UPDATE ai_config SET ai_web_timeout_seconds = NULL WHERE guild_id = 10")
+            self.assertEqual(legacy.get_ai_config(10)["ai_web_timeout_seconds"], 120)
         finally:
             legacy._sqlite_conn.close()

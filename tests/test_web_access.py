@@ -306,7 +306,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
                            "ddgs.engines.yahoo": Mock(Yahoo=SimpleNamespace(disabled=False))}
                 with patch.dict("sys.modules", engines):
                     WebAccess._search("short query", backend)
-                constructor.assert_called_once_with(timeout=4)
+                constructor.assert_called_once_with(timeout=8)
                 client.text.assert_called_once_with("short query", backend=backend, max_results=5)
 
     def test_disabled_backend_does_not_silently_use_auto(self):
@@ -433,6 +433,28 @@ class BrowserHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("https://", rendered)
         self.assertIsNone(self.web._browser)
         self.assertIsNone(self.web._playwright)
+
+    async def test_slow_navigation_and_render_complete_within_page_deadline(self):
+        loop = asyncio.get_running_loop()
+        clock = [loop.time()]
+        async def advance(seconds):
+            clock[0] += seconds
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+        async def navigate(url, **kwargs):
+            async with asyncio.timeout(kwargs["timeout"] / 1000):
+                await advance(20)
+            return SimpleNamespace(status=200, headers={"content-type": "text/html"})
+        async def document(expression):
+            await advance(10)
+            return self.document
+        self.page.goto.side_effect = navigate
+        self.page.evaluate.side_effect = document
+        with patch.object(loop, "time", lambda: clock[0]), patch.object(loop, "slow_callback_duration", 1000):
+            result = await self.web.read_webpage("https://example.com/")
+        self.assertEqual(result["source_kind"], "page_read")
+        self.assertEqual(result["text"], self.document["text"])
+        self.assertEqual(result["attempts"], 1)
 
     async def test_global_timeout_does_not_restart_navigation_or_return_partial_text(self):
         from cogs._web_access import WebReadError

@@ -79,15 +79,15 @@
 <tspan x="100" dy="0">4A · Búsqueda estándar</tspan>
 </text>
 <text x="100" y="916" class="small">
-<tspan x="100" dy="0">Conversación normal · recuperación rápida</tspan>
+<tspan x="100" dy="0">Conversación normal · plazo ajustable de 30 a 600 s</tspan>
 </text>
 <text x="100" y="958" class="body">
 <tspan x="100" dy="0">• Hasta 2 búsquedas (≤ 5 resultados por llamada).</tspan>
 <tspan x="100" dy="33">• N lecturas: 1–20; por defecto 3; cuentan fallos.</tspan>
-<tspan x="100" dy="33">• Hasta max(4, N + 1) rondas y 30 s en total.</tspan>
+<tspan x="100" dy="33">• Hasta max(4, N + 1) rondas; 120 s por defecto.</tspan>
 <tspan x="100" dy="33">• Modelo: 1024 tokens de salida, sin razonamiento;</tspan>
-<tspan x="100" dy="33">  hasta 15 s por llamada, dentro del plazo de 30 s.</tspan>
-<tspan x="100" dy="33">• Subir N no amplía las 2 búsquedas ni los 30 s.</tspan>
+<tspan x="100" dy="33">  hasta 30 s por llamada, dentro del plazo configurado.</tspan>
+<tspan x="100" dy="33">• Subir N no amplía las búsquedas ni el tiempo total.</tspan>
 </text>
 <rect x="940" y="830" width="790" height="330" rx="19" fill="#f0eafb" stroke="#b7a2d9" stroke-width="2"/>
 <text x="970" y="870" class="heading">
@@ -118,7 +118,7 @@
 <tspan x="100" dy="33">read_webpage → Chrome Headless → texto visible, fechas y enlaces.</tspan>
 <tspan x="100" dy="33">Solo web pública; valida DNS, redirecciones y solicitudes de la página.</tspan>
 <tspan x="100" dy="33">Sin login, CAPTCHA, sitios privados ni adjuntos de Discord.</tspan>
-<tspan x="100" dy="33">Chrome: 20 s/página, 64 solicitudes y 8 MiB; 1 reintento transitorio.</tspan>
+<tspan x="100" dy="33">Chrome: 60 s/lectura, 30 s/navegación; 64 peticiones, 8 MiB y 1 reintento.</tspan>
 </text>
 <rect x="1130" y="1240" width="600" height="260" rx="19" fill="#ffffff" stroke="#c5d0dc" stroke-width="2"/>
 <text x="1160" y="1282" class="heading">
