@@ -39,9 +39,6 @@ services:
       - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-http.rule=Host(`${CATBOT_DOMAIN}`)
       - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-http.entrypoints=http
       - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-http.service=${CATBOT_PROXY_NETWORK}-bot
-      - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-http.middlewares=${CATBOT_PROXY_NETWORK}-https-redirect
-      - traefik.http.middlewares.${CATBOT_PROXY_NETWORK}-https-redirect.redirectscheme.scheme=https
-      - traefik.http.middlewares.${CATBOT_PROXY_NETWORK}-https-redirect.redirectscheme.permanent=true
     volumes:
       - bot-data:/app/data
       - bot-workspaces:/app/workspaces
