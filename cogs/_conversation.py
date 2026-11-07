@@ -240,13 +240,15 @@ class Conversation:
         deep = bool(job.get("deep_think"))
         if internal:
             return {"reasoning_effort": "none", "max_output_tokens": 512, "timeout_seconds": 20}
-        if task == "web" and not deep:
-            return {"reasoning_effort": "none", "max_output_tokens": 1024, "timeout_seconds": 30}
+        if task == "web":
+            return {"reasoning_effort": job["endpoint"].get("web_reasoning_effort", "none"),
+                    "max_output_tokens": 16384,
+                    "timeout_seconds": 300 if deep else job["cfg"].get("ai_web_timeout_seconds", DEFAULT_WEB_TIMEOUT_SECONDS)}
         return {"reasoning_effort": job["endpoint"].get(f"{task}_reasoning_effort", "none"),
                 "max_output_tokens": max(4096 if deep else 0, completion_output_tokens(job["endpoint"], task=task)),
                 "timeout_seconds": 300 if deep else 180}
 
-    async def generate(self, job, messages, *, tools=None, structured=False, task="chat", internal=False):
+    async def generate(self, job, messages, *, tools=None, structured=False, task="chat", internal=False, deadline=None):
         options = {"tools": tools, "structured": structured} if tools or structured else {}
         options.update(self.generation_profile(job, task, internal=internal))
         for attempt in range(2):
@@ -255,6 +257,11 @@ class Conversation:
             # Authority and source bytes are fetched fresh after any rate-limit wait, including recovery.
             if not await self.timed(job, "authorization", self.unchanged(job)):
                 return None
+            if deadline is not None:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError
+                options["timeout_seconds"] = min(options["timeout_seconds"], remaining)
             job["_llm_calls"] = job.get("_llm_calls", 0) + 1
             clock = datetime.now(timezone.utc).isoformat(timespec="seconds")
             current_messages = [{**messages[0], "content": messages[0]["content"] +
@@ -266,15 +273,19 @@ class Conversation:
             except EndpointIncompleteResponse as exc:
                 logger.warning("Conversation incomplete task=%s reason=%s output_reserve=%d recovery=%s",
                     task, exc.reason, options["max_output_tokens"], bool(attempt))
-                if attempt or internal or not job.get("deep_think") or exc.reason not in {"length", "max_output_tokens"}:
+                if attempt or internal or (not job.get("deep_think") and task != "web") or exc.reason not in {"length", "max_output_tokens"}:
                     raise
-                # Keep the reserved window and discard truncated output; make room by omitting reasoning.
-                options["reasoning_effort"] = "none"
-                options["timeout_seconds"] = min(60, options["timeout_seconds"])
-                if task == "web" and tools and RESEARCH_REPORT_TOOL in tools:
+                # Discard truncated output and keep the same reserved output window.
+                if task == "web" and not job.get("deep_think"):
+                    instruction = "Output limit recovery: finish only the next necessary search/read tool call with compact arguments, or finish if useful read evidence is already available. Do not repeat prior tool results or invent facts."
+                elif task == "web" and tools and RESEARCH_REPORT_TOOL in tools:
+                    options["reasoning_effort"] = "none"
+                    options["timeout_seconds"] = min(60, options["timeout_seconds"])
                     options["tools"] = [RESEARCH_REPORT_TOOL]
                     instruction = "Output limit recovery: call submit_research now with a compact complete ledger of validated evidence and material gaps. Do not search or read more pages in this recovery."
                 else:
+                    options["reasoning_effort"] = "none"
+                    options["timeout_seconds"] = min(60, options["timeout_seconds"])
                     instruction = "Output limit recovery: provide a concise complete answer to the central question, grounded in the supplied evidence; retain material uncertainty and omit tangents."
                 messages = [{**messages[0], "content": messages[0]["content"] + "\n" + instruction}, *messages[1:]]
 
@@ -783,7 +794,7 @@ class Conversation:
         remaining_bytes = min(final_allowance, max(0, (capacity - len(json.dumps(messages + tools).encode("utf-8")) - 1024) // 2))
         checkpoint_required = False
         try:
-            async with asyncio.timeout(None if deep else quick_timeout):
+            async with asyncio.timeout(None if deep else quick_timeout) as retrieval_timeout:
                 while True:
                     if not await self.scope_current(job):
                         return None
@@ -798,7 +809,8 @@ class Conversation:
                         messages = frame(checkpoint=True)
                     if not await self.budget.replay_fits(self.session, web_cfg, messages, tools=active_tools):
                         raise ContextBudgetError("research_checkpoint_exceeds_window")
-                    response = await self.generate(job, messages, tools=active_tools, structured=True, task="web")
+                    response = await self.generate(job, messages, tools=active_tools, structured=True, task="web",
+                        deadline=retrieval_timeout.when())
                     rounds += 1
                     if response is None:
                         return None
@@ -958,6 +970,8 @@ class Conversation:
                 return quick_result(reason="timeout")
             reason = ("provider_timeout" if isinstance(exc, TimeoutError) else
                       "endpoint_output_limit" if isinstance(exc, EndpointIncompleteResponse) and exc.reason in {"length", "max_output_tokens"} else str(exc))
+            if not deep and reason == "endpoint_output_limit":
+                return quick_result(reason=reason)
             if deep and last_result is not None and reason in {"provider_timeout", "endpoint_output_limit", "research_no_progress", "research_missing_report"}:
                 return incomplete_result(reason)
             raise

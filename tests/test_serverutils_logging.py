@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import discord
 
-from cogs.logging import Logging
+from cogs.logging import Logging, PERMISSION_NAMES
 from cogs.moderation import Moderation
 from cogs.serverutils import ServerUtils
 
@@ -170,12 +170,41 @@ class ChannelUpdateLoggingTest(unittest.IsolatedAsyncioTestCase):
         })
         await self.cog.on_guild_channel_update(before, after)
         text = self.sent_text()
-        for value in ("Categoría", "Rol", "Usuario", "400", "500", "permitir → denegar", "denegar → heredar", "heredar → permitir"):
+        for value in ("Categoría", "Rol", "Usuario", "400", "500", "Permitidos → Bloqueados", "Bloqueados → Heredados", "Heredados → Permitidos"):
             self.assertIn(value, text)
         self.assertIn("eliminado", text.lower())
         self.cog._send_log.reset_mock()
         await self.cog.on_guild_channel_update(self.channel(), self.channel(overwrites={role: discord.PermissionOverwrite(view_channel=True)}))
         self.assertIn("añadido", self.sent_text().lower())
+
+    async def test_permission_summary_groups_transitions_and_links_known_targets(self):
+        role = discord.Role(guild=SimpleNamespace(id=123), state=None,
+                            data={"id": "400", "name": "Miembros", "permissions": "0", "position": 1})
+        user = Mock(id=500, display_name="Ana", mention="<@500>")
+        before = self.channel(overwrites={role: discord.PermissionOverwrite(view_channel=True)})
+        after = self.channel(overwrites={
+            role: discord.PermissionOverwrite(view_channel=False, create_instant_invite=False, send_messages=True),
+            user: discord.PermissionOverwrite(connect=True),
+        })
+        await self.cog.on_guild_channel_update(before, after)
+        embed = self.cog._send_log.await_args.args[1]
+        text = self.sent_text()
+        self.assertEqual(embed.title, "✏️ Canal actualizado")
+        self.assertEqual(embed.fields[0].value, "<#200>")
+        self.assertIn("<@&400>", text)
+        self.assertIn("<@500>", text)
+        self.assertIn("Permitidos → Bloqueados: Ver canal", text)
+        self.assertIn("Heredados → Bloqueados: Crear invitaciones", text)
+        self.assertIn("Heredados → Permitidos: Enviar mensajes", text)
+        self.assertNotIn("ID 400", text)
+        self.assertNotIn("create_instant_invite", text)
+        self.assertNotIn("read_messages", text)
+        self.assertFalse(embed.footer.text)
+        self.cog._send_log.reset_mock()
+        await self.cog.on_guild_channel_update(self.channel(), self.channel(overwrites={
+            role: discord.PermissionOverwrite(create_instant_invite=False, send_messages=False),
+        }))
+        self.assertIn("Heredados → Bloqueados: Crear invitaciones, Enviar mensajes", self.sent_text())
 
     async def test_forum_tags_and_defaults_detect_renames_without_false_changes(self):
         old = discord.ForumTag(name="Fotos", moderated=False)
@@ -194,11 +223,16 @@ class ChannelUpdateLoggingTest(unittest.IsolatedAsyncioTestCase):
     async def test_large_changes_are_split_without_losing_permissions_or_exceeding_limits(self):
         targets = {discord.Object(id=400 + i, type=discord.Role): discord.PermissionOverwrite(**{name: True for name in discord.PermissionOverwrite.PURE_FLAGS})
                    for i in range(10)}
-        await self.cog.on_guild_channel_update(self.channel(topic="a" * 4096), self.channel(topic="😀" * 4096, overwrites=targets))
+        previous = {target: discord.PermissionOverwrite(**{
+            name: False for name in sorted(discord.PermissionOverwrite.PURE_FLAGS)[::2]
+        }) for target in targets}
+        await self.cog.on_guild_channel_update(self.channel(topic="a" * 4096, overwrites=previous),
+                                              self.channel(topic="😀" * 4096, overwrites=targets))
         self.assertGreater(self.cog._send_log.await_count, 1)
         text = self.sent_text()
         for name in discord.PermissionOverwrite.PURE_FLAGS:
-            self.assertIn(name, text)
+            self.assertIn(PERMISSION_NAMES[name], text)
+            self.assertNotIn(f"`{name}`", text)
         for call in self.cog._send_log.await_args_list:
             embed = call.args[1]
             self.assertLessEqual(len(embed), 6000)

@@ -30,7 +30,7 @@ CHANNEL_SETTINGS = (
     ("permissions_synced", "Permisos sincronizados con categoría"),
 )
 PERMISSION_NAMES = {
-    "view_channel": "Ver canal", "send_messages": "Enviar mensajes",
+    "view_channel": "Ver canal", "read_messages": "Ver canal", "send_messages": "Enviar mensajes",
     "manage_channels": "Gestionar canal", "manage_roles": "Gestionar permisos",
     "read_message_history": "Leer historial", "add_reactions": "Añadir reacciones",
     "connect": "Conectar", "speak": "Hablar", "stream": "Vídeo",
@@ -38,6 +38,24 @@ PERMISSION_NAMES = {
     "manage_messages": "Gestionar mensajes", "mention_everyone": "Mencionar a todos",
     "send_messages_in_threads": "Enviar en hilos", "create_public_threads": "Crear hilos públicos",
     "create_private_threads": "Crear hilos privados", "manage_threads": "Gestionar hilos",
+    "create_instant_invite": "Crear invitaciones", "administrator": "Administrador",
+    "kick_members": "Expulsar miembros", "ban_members": "Banear miembros",
+    "manage_guild": "Gestionar servidor", "view_audit_log": "Ver registro de auditoría",
+    "priority_speaker": "Prioridad de palabra", "send_tts_messages": "Enviar mensajes de voz sintetizada",
+    "external_emojis": "Usar emojis externos", "external_stickers": "Usar stickers externos",
+    "view_guild_insights": "Ver estadísticas del servidor", "mute_members": "Silenciar miembros",
+    "deafen_members": "Ensordecer miembros", "move_members": "Mover miembros",
+    "use_voice_activation": "Usar actividad de voz", "change_nickname": "Cambiar apodo",
+    "manage_nicknames": "Gestionar apodos", "manage_webhooks": "Gestionar webhooks",
+    "manage_expressions": "Gestionar emojis y stickers", "create_expressions": "Crear emojis y stickers",
+    "use_application_commands": "Usar comandos de aplicaciones", "request_to_speak": "Pedir la palabra",
+    "manage_events": "Gestionar eventos", "create_events": "Crear eventos",
+    "use_embedded_activities": "Usar actividades", "moderate_members": "Aislar miembros",
+    "view_creator_monetization_analytics": "Ver estadísticas de monetización",
+    "use_soundboard": "Usar panel de sonidos", "use_external_sounds": "Usar sonidos externos",
+    "send_voice_messages": "Enviar mensajes de voz", "set_voice_channel_status": "Cambiar estado del canal de voz",
+    "send_polls": "Crear encuestas", "use_external_apps": "Usar aplicaciones externas",
+    "pin_messages": "Fijar mensajes", "bypass_slowmode": "Omitir modo lento",
 }
 AUDIT_FIELDS = {
     "name": "Nombre", "description": "Descripción", "topic": "Tema", "nick": "Apodo",
@@ -55,13 +73,19 @@ AUDIT_FIELDS = {
 }
 AUDIT_GATEWAY_ACTIONS = {
     "channel_create", "channel_update", "channel_delete", "overwrite_create", "overwrite_update", "overwrite_delete",
-    "ban", "unban", "message_delete", "message_bulk_delete", "member_move", "member_disconnect",
+    "ban", "unban",
+}
+AUDIT_ACTIVITY_EVENTS = {
+    "message_delete": "message_delete", "message_bulk_delete": "bulk_message_delete",
+    "member_move": "voice_state_update", "member_disconnect": "voice_state_update",
 }
 AUDIT_ACTION_NAMES = {
     "guild_update": "Servidor actualizado", "member_role_update": "Roles de miembro", "member_update": "Miembro actualizado",
     "role_create": "Rol creado", "role_update": "Rol actualizado", "role_delete": "Rol eliminado",
     "kick": "Miembro expulsado", "member_prune": "Depuración de miembros", "bot_add": "Bot añadido",
     "message_pin": "Mensaje fijado", "message_unpin": "Mensaje desfijado",
+    "message_delete": "Auditoría · Mensajes eliminados", "message_bulk_delete": "Auditoría · Eliminación en lote",
+    "member_move": "Auditoría · Miembros movidos", "member_disconnect": "Auditoría · Miembros desconectados",
 }
 
 
@@ -117,28 +141,36 @@ def _channel_changes(before, after):
                 for target, overwrite in getattr(channel, "overwrites", {}).items()}
 
     old_overwrites, new_overwrites = overwrites(before), overwrites(after)
-    states = {None: "heredar", True: "permitir", False: "denegar"}
+    states = {None: "Heredados", True: "Permitidos", False: "Bloqueados"}
     for key in sorted(old_overwrites.keys() | new_overwrites.keys()):
         target, old = old_overwrites.get(key, (None, {}))
         new_target, new = new_overwrites.get(key, (None, {}))
         target = new_target or target
-        lines = []
+        transitions = {}
         for permission in sorted(old.keys() | new.keys()):
             if old.get(permission) != new.get(permission):
-                label = PERMISSION_NAMES.get(permission, permission)
-                lines.append(f"{label} (`{permission}`): {states[old.get(permission)]} → {states[new.get(permission)]}")
-        if not lines and key in old_overwrites and key in new_overwrites:
+                transition = f"{states[old.get(permission)]} → {states[new.get(permission)]}"
+                label = PERMISSION_NAMES.get(permission, permission.replace("_", " ").capitalize())
+                transitions.setdefault(transition, []).append(label)
+        if not transitions and key in old_overwrites and key in new_overwrites:
             continue
         action = "añadido" if key not in old_overwrites else "eliminado" if key not in new_overwrites else "modificado"
-        name = getattr(target, "display_name", getattr(target, "name", "sin caché"))
-        heading = f"Permisos · {key[0]} {_log_clip(name, 120)} (ID {key[1]}) · {action}"
-        chunk = ""
-        for line in lines or ["Sin permisos explícitos (heredar)."]:
-            if len((chunk + "\n" + line).encode("utf-16-le")) // 2 > 1024:
-                changes.append((heading, chunk))
-                chunk = ""
-            chunk = f"{chunk}\n{line}" if chunk else line
-        changes.append((heading, chunk))
+        name = getattr(target, "display_name", getattr(target, "name", None))
+        identity = getattr(target, "mention", None) if name else None
+        identity = identity or (_log_clip(name, 120) if name else f"ID {key[1]} (sin caché)")
+        heading = f"Permisos · {key[0]} · {action}"
+        chunk = identity
+        for transition, labels in transitions.items():
+            line = f"{transition}: "
+            for label in labels:
+                separator = "" if line.endswith(": ") else ", "
+                if len((chunk + "\n" + line + separator + label).encode("utf-16-le")) // 2 > 1024:
+                    changes.append((heading, chunk + "\n" + line if separator else chunk))
+                    chunk, line = identity, f"{transition}: "
+                    separator = ""
+                line += separator + label
+            chunk += "\n" + line
+        changes.append((heading, chunk if transitions else identity + "\nSin permisos explícitos; se heredan."))
     return changes
 
 
@@ -194,6 +226,7 @@ class Logging(commands.Cog):
         self.bot = bot
         self.db = bot.db  # type: ignore
         self._last_log: dict[int, float] = {}
+        self._recent_audit_ids: dict[int, None] = {}
 
     @classmethod
     def _event_enabled(cls, raw, event_name: str) -> bool:
@@ -432,6 +465,10 @@ class Logging(commands.Cog):
         if before.nick != after.nick:
             await self._send_fields(guild, "📝 Apodo de miembro", identity + [
                 ("Apodo", f"Antes: {_log_clip(before.nick or 'Ninguno', 450)}\nDespués: {_log_clip(after.nick or 'Ninguno', 450)}")], "nickname_changes")
+        old_timeout, new_timeout = getattr(before, "timed_out_until", None), getattr(after, "timed_out_until", None)
+        if old_timeout != new_timeout:
+            await self._send_fields(guild, "⏱️ Aislamiento de miembro", identity + [
+                ("Aislamiento hasta", f"Antes: {_log_clip(_audit_value(old_timeout), 450)}\nDespués: {_log_clip(_audit_value(new_timeout), 450)}")], "audit_events")
 
     def _audit_available(self, guild):
         permissions = getattr(getattr(guild, "me", None), "guild_permissions", None)
@@ -453,6 +490,12 @@ class Logging(commands.Cog):
         action = entry.action.name
         if action in AUDIT_GATEWAY_ACTIONS:
             return
+        if entry.id in self._recent_audit_ids:
+            return
+        self._recent_audit_ids[entry.id] = None
+        # shortcut: dedup keeps the latest 512 IDs in memory; use durable IDs if replay is added.
+        if len(self._recent_audit_ids) > 512:
+            self._recent_audit_ids.pop(next(iter(self._recent_audit_ids)))
         identity = [("Objetivo", _log_clip(_audit_value(entry.target), 240)),
                     ("Autor", _log_clip(_audit_value(entry.user) if entry.user else f"ID {entry.user_id}" if entry.user_id else "No informado", 240))]
         if entry.reason:
@@ -476,11 +519,16 @@ class Logging(commands.Cog):
         omitted = sorted(changed - AUDIT_FIELDS.keys())
         if omitted:
             fields.append(("Otros atributos modificados (sin valores)", _log_clip(", ".join(omitted), 960)))
+        if action in AUDIT_ACTIVITY_EVENTS:
+            for key, label in (("count", "Cantidad"), ("channel", "Canal")):
+                value = getattr(getattr(entry, "extra", None), key, None)
+                if value is not None:
+                    fields.append((label, _log_clip(_audit_value(value), 450)))
         if action == "member_update" and not fields:
             return
         if not fields:
             fields = [("Detalles", "Discord registró la acción; no proporcionó cambios compatibles para mostrar.")]
-        event_name = "role_change" if action in {"role_create", "role_update", "role_delete"} else "audit_events"
+        event_name = AUDIT_ACTIVITY_EVENTS.get(action, "role_change" if action in {"role_create", "role_update", "role_delete"} else "audit_events")
         await self._send_fields(entry.guild, title, identity + fields, event_name, entry_id=entry.id)
 
     # ── Channel events ──────────────────────────────────────────────────────
@@ -527,13 +575,12 @@ class Logging(commands.Cog):
         pages = (len(changes) + 3) // 4
         for index in range(pages):
             embed = discord.Embed(
-                title=f"✏️ {kind} actualizado/a · {index + 1}/{pages}",
+                title=f"✏️ {kind} {'actualizada' if kind == 'Categoría' else 'actualizado'}" + (f" · {index + 1}/{pages}" if pages > 1 else ""),
                 color=discord.Color.yellow(), timestamp=datetime.now(timezone.utc),
             )
-            embed.add_field(name=kind, value=f"{_log_clip(after.name, 180)} (ID {after.id})", inline=False)
+            embed.add_field(name=kind, value=getattr(after, "mention", None) or _log_clip(after.name, 180), inline=False)
             for label, value in changes[index * 4:(index + 1) * 4]:
                 embed.add_field(name=label, value=value, inline=False)
-            embed.set_footer(text="Antes → después · heredar = sin permiso explícito · … = texto recortado")
             await self._send_log(after.guild, embed, "channel_update")
 
     # ── Voice events ────────────────────────────────────────────────────────

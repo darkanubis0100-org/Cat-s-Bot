@@ -1,5 +1,6 @@
 import json
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -11,6 +12,7 @@ from cogs.serverutils import ServerUtils, ServerLogsView
 
 class MemberAuditLoggingTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.entry_id = 1566511831835742250
         self.config = {"serverlog_enabled": 1, "serverlog_channel": 900, "log_events": '{"role_change":true,"nickname_changes":true,"audit_events":true}'}
         self.output = SimpleNamespace(id=900, mention="<#900>", send=AsyncMock())
         self.guild = SimpleNamespace(id=10, owner_id=1, name="Test", _state=SimpleNamespace(get_emoji=lambda _ident: None),
@@ -21,6 +23,7 @@ class MemberAuditLoggingTest(unittest.IsolatedAsyncioTestCase):
         self.roles = {10: self.default, 50: self.high, 51: self.managed}
         self.guild.get_role = self.roles.get
         self.guild.get_channel = lambda ident: self.output if ident == 900 else None
+        self.guild.get_channel_or_thread = self.guild.get_channel
         self.guild.me = SimpleNamespace(id=99, top_role=self.role(99, 141), guild_permissions=discord.Permissions(view_audit_log=True))
         self.bot = SimpleNamespace(intents=discord.Intents.default(), db=SimpleNamespace(
             get_server_config=lambda _ident: self.config, enqueue_log_outbox=Mock()), get_guild=lambda _ident: self.guild)
@@ -35,6 +38,8 @@ class MemberAuditLoggingTest(unittest.IsolatedAsyncioTestCase):
                                display_name="Member", mention="<@42>", display_avatar=SimpleNamespace(url="https://example.test/avatar.png"))
 
     def entry(self, action, changes=None, **data):
+        data.setdefault("id", str(self.entry_id))
+        self.entry_id += 1
         return discord.AuditLogEntry(users={}, integrations={}, app_commands={}, automod_rules={}, webhooks={},
             guild=self.guild, data={"id": "1566511831835742250", "action_type": action.value,
                                    "user_id": "43", "target_id": "42", "changes": changes or [], **data})
@@ -51,6 +56,44 @@ class MemberAuditLoggingTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("50", self.text())
         self.assertIn("51", self.text())
         self.assertEqual(self.cog._send_log.await_count, 2)
+
+    async def test_native_timeout_gateway_fallback_without_audit_access(self):
+        self.guild.me.guild_permissions = discord.Permissions.none()
+        before, after = self.member([self.default]), self.member([self.default])
+        before.timed_out_until = None
+        after.timed_out_until = datetime(2026, 11, 7, 19, tzinfo=timezone.utc)
+        await self.cog.on_member_update(before, after)
+        await self.cog.on_member_update(after, before)
+        await self.cog.on_member_update(after, after)
+        self.assertEqual(self.cog._send_log.await_count, 2)
+        self.assertIn("2026-11-07T19:00:00+00:00", self.text())
+        self.assertIn("Sin configurar", self.text())
+        self.assertNotIn("Autor", self.text())
+        self.assertTrue(all(call.args[2] == "audit_events" for call in self.cog._send_log.await_args_list))
+
+    async def test_native_timeout_uses_audit_source_once_when_available(self):
+        before, after = self.member([self.default]), self.member([self.default])
+        before.timed_out_until = None
+        after.timed_out_until = datetime(2026, 11, 7, 19, tzinfo=timezone.utc)
+        await self.cog.on_member_update(before, after)
+        self.cog._send_log.assert_not_awaited()
+        await self.cog.on_audit_log_entry_create(self.entry(discord.AuditLogAction.member_update,
+            [{"key": "communication_disabled_until", "old_value": None,
+              "new_value": after.timed_out_until.isoformat()}]))
+        self.cog._send_log.assert_awaited_once()
+        self.assertEqual(self.cog._send_log.await_args.args[2], "audit_events")
+        self.assertIn("2026-11-07T19:00:00+00:00", self.text())
+
+    async def test_native_timeout_gateway_fallback_respects_disabled_audit_filter(self):
+        self.guild.me.guild_permissions = discord.Permissions.none()
+        self.config["log_events"] = '{"audit_events":false,"role_change":true,"nickname_changes":true}'
+        self.cog._send_log = Logging._send_log.__get__(self.cog, Logging)
+        before, after = self.member([self.default]), self.member([self.default])
+        before.timed_out_until = None
+        after.timed_out_until = datetime(2026, 11, 7, 19, tzinfo=timezone.utc)
+        await self.cog.on_member_update(before, after)
+        self.output.send.assert_not_awaited()
+        self.bot.db.enqueue_log_outbox.assert_not_called()
 
     async def test_audit_is_only_role_source_and_works_without_cached_actor_or_target(self):
         before, after = self.member([self.default]), self.member([self.default, self.high])
@@ -83,9 +126,35 @@ class MemberAuditLoggingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cog._send_log.await_count, 4)
         self.cog._send_log.reset_mock()
         for action in (discord.AuditLogAction.channel_update, discord.AuditLogAction.overwrite_update,
-                       discord.AuditLogAction.ban, discord.AuditLogAction.message_delete):
+                       discord.AuditLogAction.ban):
             await self.cog.on_audit_log_entry_create(self.entry(action))
         self.cog._send_log.assert_not_awaited()
+
+    async def test_administrative_activity_logs_uncached_actor_once_and_keeps_category_filters(self):
+        for index, (action, event, options) in enumerate((
+            (discord.AuditLogAction.message_delete, "message_delete", {"count": "2", "channel_id": "700"}),
+            (discord.AuditLogAction.message_bulk_delete, "bulk_message_delete", {"count": "4"}),
+            (discord.AuditLogAction.member_move, "voice_state_update", {"count": "1", "channel_id": "700"}),
+            (discord.AuditLogAction.member_disconnect, "voice_state_update", {"count": "3"}),
+        )):
+            self.cog._send_log.reset_mock()
+            entry = self.entry(action, options=options, id=str(1566511831835742300 + index))
+            await self.cog.on_audit_log_entry_create(entry)
+            await self.cog.on_audit_log_entry_create(entry)
+            self.cog._send_log.assert_awaited_once()
+            self.assertEqual(self.cog._send_log.await_args.args[2], event)
+            self.assertIn("Auditoría", self.cog._send_log.await_args.args[1].title)
+            self.assertIn("ID 43", self.text())
+            fields = {field.name: field.value for field in self.cog._send_log.await_args.args[1].fields}
+            self.assertEqual(fields["Cantidad"], options["count"])
+            if "channel_id" in options:
+                self.assertIn("700", self.text())
+        self.cog._send_log = Logging._send_log.__get__(self.cog, Logging)
+        self.config["log_events"] = '{"message_delete":false,"voice_state_update":false,"audit_events":true}'
+        for action in (discord.AuditLogAction.message_delete, discord.AuditLogAction.member_disconnect):
+            await self.cog.on_audit_log_entry_create(self.entry(action, id=str(1566511831835742400 + action.value)))
+        self.output.send.assert_not_awaited()
+        self.bot.db.enqueue_log_outbox.assert_not_called()
 
     async def test_unknown_member_attributes_are_reported_without_their_values(self):
         entry = self.entry(discord.AuditLogAction.member_update,
@@ -94,6 +163,15 @@ class MemberAuditLoggingTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("future", self.text())
         self.assertNotIn("SECRET", self.text())
         self.assertEqual(self.cog._send_log.await_args.args[2], "audit_events")
+
+    async def test_unknown_audit_action_from_bot_actor_gets_safe_summary(self):
+        entry = self.entry(SimpleNamespace(value=99999))
+        entry.user = SimpleNamespace(id=99, display_name="Other bot", bot=True)
+        await self.cog.on_audit_log_entry_create(entry)
+        self.cog._send_log.assert_awaited_once()
+        self.assertIn("unknown 99999", self.text())
+        self.assertIn("Other bot", self.text())
+        self.assertIn("ID 99", self.text())
 
     async def test_audit_payload_omits_secrets_and_bounds_long_roles_and_changes(self):
         huge = [{"id": str(1000+i), "name": "😀" * 100} for i in range(100)]

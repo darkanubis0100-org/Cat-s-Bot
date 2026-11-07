@@ -16,7 +16,6 @@ yt-dlp>=2024.11.6
 # AI / Export
 google-genai>=0.3.0
 chat-exporter>=2.5.0
-ddgs>=9.16.1,<10
 playwright>=1.64.1,<2
 
 # Translation (optional)

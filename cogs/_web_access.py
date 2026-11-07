@@ -9,15 +9,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ipaddress
+import json
 import logging
 import os
 import re
 import socket
 import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
+
+import aiohttp
 from cogs._research_context import select_passages
 
 
@@ -26,14 +28,13 @@ logger = logging.getLogger(__name__)
 
 MAX_TEXT = 128_000
 MAX_RESULTS = 5
-SEARCH_ATTEMPT_TIMEOUT = 12
+SEARCH_TIMEOUT = 30
+MAX_SEARCH_RESPONSE = 1024 * 1024
 PAGE_TIMEOUT = 60
 MAX_TRANSFER = 8 * 1024 * 1024
 MAX_REQUESTS = 64
 CHROME_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
 _WEB_SLOT = asyncio.Semaphore(1)
-# A timed-out primary must not prevent the fallback from starting.
-_SEARCH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="catsbot-search")
 
 
 class WebReadError(ValueError):
@@ -366,49 +367,36 @@ class WebAccess:
             if cached and time.monotonic() - cached[0] < 300:
                 self._cache.move_to_end(query)
                 return {**cached[1], "results": [dict(row) for row in cached[1]["results"]]}
-            results, missing_dependencies = [], 0
+            results, outcome = [], "empty"
             try:
-                async with asyncio.timeout(30):
-                    for backend in ("duckduckgo", "yahoo"):
-                        outcome = "empty"
+                async with asyncio.timeout(SEARCH_TIMEOUT):
+                    payload = await self._search(query)
+                    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+                        raise ValueError("Respuesta de búsqueda no válida.")
+                    seen = set()
+                    for row in payload["results"][:50]:
+                        if not isinstance(row, dict):
+                            continue
                         try:
-                            # Reserve time for the fallback instead of letting one backend consume all 30 seconds.
-                            async with asyncio.timeout(SEARCH_ATTEMPT_TIMEOUT):
-                                rows = await asyncio.get_running_loop().run_in_executor(_SEARCH_EXECUTOR, self._search, query, backend)
-                                if not isinstance(rows, list):
-                                    outcome, rows = "malformed", []
-                                seen = set()
-                                for row in rows[:MAX_RESULTS]:
-                                    if not isinstance(row, dict):
-                                        continue
-                                    try:
-                                        url = await _verified_url(row.get("href") or row.get("url") or "")
-                                    except ValueError:
-                                        continue
-                                    if url in seen:
-                                        continue
-                                    seen.add(url)
-                                    results.append({"title": str(row.get("title") or "")[:300], "url": url,
-                                        "snippet": str(row.get("body") or "")[:1000],
-                                        "published_at_untrusted": str(row.get("date") or "")[:100] or None})
-                                if outcome != "malformed":
-                                    outcome = "ok" if results else "unusable" if rows else "empty"
-                        except ImportError:
-                            missing_dependencies += 1
-                            outcome = "dependency_missing"
-                        except TimeoutError:
-                            outcome = "timeout"
-                        except Exception as exc:
-                            outcome = type(exc).__name__
-                        logger.debug("Public search backend=%s outcome=%s results=%d", backend, outcome, len(results))
-                        if results:
+                            url = await _verified_url(row.get("url") or "")
+                        except ValueError:
+                            continue
+                        if url in seen:
+                            continue
+                        seen.add(url)
+                        results.append({"title": str(row.get("title") or "")[:300], "url": url,
+                            "snippet": str(row.get("content") or "")[:1000],
+                            "published_at_untrusted": str(row.get("publishedDate") or "")[:100] or None})
+                        if len(results) == MAX_RESULTS:
                             break
+                    outcome = "ok" if results else "empty"
             except TimeoutError:
-                logger.debug("Public search outcome=total_timeout")
+                outcome = "timeout"
+            except Exception as exc:
+                outcome = type(exc).__name__
+            logger.debug("Public search backend=searxng outcome=%s results=%d", outcome, len(results))
             if not results:
-                if missing_dependencies == 2:
-                    raise ValueError("La búsqueda web requiere instalar la dependencia ddgs.") from None
-                raise ValueError("Los buscadores públicos no están disponibles o agotaron el tiempo de búsqueda.") from None
+                raise ValueError("El buscador público SearXNG no está disponible o no devolvió resultados públicos válidos.") from None
             result = {"results": results, "source_kind": "search_snippets", "query": query,
                       "retrieved_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds")}
             self._cache[query] = (time.monotonic(), result)
@@ -418,14 +406,25 @@ class WebAccess:
             return {**result, "results": [dict(row) for row in results]}
 
     @staticmethod
-    def _search(query: str, backend: str):
-        from ddgs import DDGS
-        from ddgs.engines.yahoo import Yahoo
-        from ddgs.engines.duckduckgo import Duckduckgo
-        engine = {"duckduckgo": Duckduckgo, "yahoo": Yahoo}[backend]
-        if engine.disabled:
-            raise ValueError("El buscador no está disponible.")
-        return DDGS(timeout=8).text(query, backend=backend, max_results=MAX_RESULTS)
+    async def _search(query: str):
+        # Infrastructure endpoint is operator-owned; never accept one from a tool argument.
+        base = os.getenv("SEARXNG_BASE_URL", "http://searxng:8080").rstrip("/")
+        parsed = urlsplit(base)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None
+                or parsed.password is not None or parsed.query or parsed.fragment):
+            raise ValueError("La URL del servicio SearXNG no es válida.")
+        timeout = aiohttp.ClientTimeout(total=SEARCH_TIMEOUT, connect=5)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+            async with session.post(base + "/search", data={"q": query, "format": "json", "categories": "general"},
+                                    allow_redirects=False) as response:
+                if response.status != 200:
+                    raise ValueError("SearXNG no devolvió una búsqueda válida.")
+                body = bytearray()
+                async for chunk in response.content.iter_chunked(65_536):
+                    body.extend(chunk)
+                    if len(body) > MAX_SEARCH_RESPONSE:
+                        raise ValueError("La respuesta de búsqueda supera el límite permitido.")
+                return json.loads(body)
 
     async def read_webpage(self, url: str, *, query: str = "", max_text: int = MAX_TEXT) -> dict:
         if self._closed:

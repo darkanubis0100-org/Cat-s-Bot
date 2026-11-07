@@ -64,6 +64,13 @@ El bot responde cuando alguien lo menciona o responde a uno de sus mensajes real
 
 Cada ámbito se separa por servidor. La tabla resume dónde se conserva cada tipo de recuerdo; los mensajes normales nunca se convierten automáticamente en memoria global ni en reglas.
 
+El archivado masivo RAG se ha retirado: el bot ya no captura todos los mensajes,
+recupera historial para ese archivo ni ofrece `/rag` o su API de configuración,
+backfill y exportación. Las configuraciones antiguas de `workspaces/` no lo
+reactivan. Los archivos históricos existentes se conservan sin leerlos ni
+borrarlos; las copias de seguridad pueden seguir incluyéndolos. Esta retirada
+mantiene la memoria acotada del chat y las evidencias y registros de moderación.
+
 | Ámbito | Contenido y duración | Quién puede usarlo y cómo se controla |
 | --- | --- | --- |
 | Chat/canal o hilo | Mensajes recientes con ID, autor y orden, hasta 30 días, más una nota administrada. `ai_memory_messages`: 0–5000, predeterminado 40. | Se observan mensajes autorizados del canal IA; en otros canales solo turnos dirigidos al bot. 0 desactiva el historial, pero conserva el mensaje actual y notas. No hay importación retroactiva ni del corpus RAG. |

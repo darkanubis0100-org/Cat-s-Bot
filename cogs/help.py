@@ -212,16 +212,6 @@ CATEGORIES = {
             ("/starboard config", "Ver configuración"),
         ],
     },
-    "rag": {
-        "emoji": "📚",
-        "name": "RAG / Historial",
-        "commands": [
-            ("/rag status", "Estado de captura"),
-            ("/rag config", "Configura captura y backfill"),
-            ("/rag backfill", "Recupera historial pendiente"),
-            ("/rag export", "Exporta mensajes a Markdown/TXT/JSONL"),
-        ],
-    },
 }
 
 

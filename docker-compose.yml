@@ -1,0 +1,80 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      TOKEN: ${TOKEN:?TOKEN is required}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET}
+      DASHBOARD_URL: ${DASHBOARD_URL}
+      API_BASE_URL: ${API_BASE_URL}
+      API_HOST: 0.0.0.0
+      API_PORT: 8080
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      MASTER_ADMIN_KEY: ${MASTER_ADMIN_KEY}
+      DB_TYPE: ${DB_TYPE:-sqlite}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      SEARXNG_BASE_URL: http://searxng:8080
+    expose:
+      - "8080"
+    networks:
+      - proxy
+      - search
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${CATBOT_PROXY_NETWORK:?Set the existing Coolify application network}
+      - traefik.http.services.${CATBOT_PROXY_NETWORK}-bot.loadbalancer.server.port=8080
+      - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-https.rule=Host(`${CATBOT_DOMAIN:?Set the dashboard hostname}`)
+      - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-https.entrypoints=https
+      - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-https.service=${CATBOT_PROXY_NETWORK}-bot
+      - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-https.tls=true
+      - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-https.tls.certresolver=letsencrypt
+      - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-http.rule=Host(`${CATBOT_DOMAIN}`)
+      - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-http.entrypoints=http
+      - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-http.service=${CATBOT_PROXY_NETWORK}-bot
+      - traefik.http.routers.${CATBOT_PROXY_NETWORK}-bot-http.middlewares=${CATBOT_PROXY_NETWORK}-https-redirect
+      - traefik.http.middlewares.${CATBOT_PROXY_NETWORK}-https-redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.${CATBOT_PROXY_NETWORK}-https-redirect.redirectscheme.permanent=true
+    volumes:
+      - bot-data:/app/data
+      - bot-workspaces:/app/workspaces
+    security_opt:
+      - seccomp=/data/coolify/applications/1vq9mklpmnkkojoxragj06sr/chrome-seccomp.json
+    depends_on:
+      searxng:
+        condition: service_healthy
+
+  searxng:
+    build:
+      context: ./deploy/docker/searxng
+    restart: unless-stopped
+    networks:
+      - search
+    labels:
+      - traefik.enable=false
+    healthcheck:
+      test:
+        - CMD
+        - /usr/local/searxng/.venv/bin/python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).close()"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+networks:
+  proxy:
+    external: true
+    name: ${CATBOT_PROXY_NETWORK:?Set the existing Coolify application network}
+  search:
+
+volumes:
+  bot-data:
+    external: true
+    name: ${CATBOT_DATA_VOLUME:?Set the existing data volume name}
+  bot-workspaces:
+    external: true
+    name: ${CATBOT_WORKSPACES_VOLUME:?Set the existing workspaces volume name}

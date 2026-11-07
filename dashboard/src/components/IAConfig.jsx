@@ -331,7 +331,7 @@ function IASettings({ guildId, onNavigate }) {
 
         {usingStrata && <div className="config-item inline-check">
           <div>
-            <div style={{ fontWeight: 700 }}>Internet: DuckDuckGo, Yahoo y Chrome Headless</div>
+            <div style={{ fontWeight: 700 }}>Internet: SearXNG privado y Chrome Headless</div>
             <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
               Permite buscar en la web pública y leer páginas para responder con fuentes. Se activa solo para la conversación, independientemente de Moderación IA.
             </div>

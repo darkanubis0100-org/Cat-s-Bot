@@ -1,5 +1,30 @@
 # Chrome en Docker y Coolify
 
+## Búsqueda privada con Docker Compose
+
+`docker-compose.yml` construye el bot con el Dockerfile existente y añade SearXNG como servicio privado. El bot conserva UID/GID `1000:1000`, su puerto interno `8080` y el perfil seccomp administrado en `/data/coolify/applications/1vq9mklpmnkkojoxragj06sr/chrome-seccomp.json`. El servicio `bot` se conecta a la red externa de la aplicación Coolify y a una red de búsqueda separada. Las etiquetas Traefik de Compose enrutan `https://mi.dark-anubis.com` únicamente al bot, puerto `8080`, y redirigen HTTP a HTTPS. Usan los entrypoints `http`/`https` y el resolver `letsencrypt` de la [configuración oficial de Coolify](https://coolify.io/docs/core/networking/proxy/traefik/overview). `searxng` solo se conecta a la red de búsqueda, tiene `traefik.enable=false`, no publica puertos ni recibe dominio. La red de búsqueda permite consultar Internet; no debe marcarse `internal: true` porque impediría esa salida.
+
+La imagen auxiliar deriva de la [publicación oficial](https://github.com/searxng/searxng/pkgs/container/searxng), versión `2026.11.6-ac11e14c5`, fijada por digest de manifiesto `sha256:c750ee1d859b26d3aeae51c07f6a48c3a0bfbaa9195d71a18b258862d88c4c3c`. Incorpora `deploy/docker/searxng/settings.yml` en una ruta propia para que un volumen generado por la imagen base no oculte futuras actualizaciones de configuración. El arranque genera una clave de firma aleatoria efímera y ejecuta el entrypoint oficial; no hay sesiones de usuarios que conservar ni claves de API que contratar. El límite de peticiones de una instancia pública está desactivado; no necesita Redis/Valkey. El healthcheck local `/healthz` acredita que responde el servicio, no la disponibilidad de cada motor externo.
+
+El bot usa `SEARXNG_BASE_URL=http://searxng:8080`, una dirección de infraestructura que no puede elegir el modelo. Consulta `POST /search` con `format=json`, habilitado explícitamente según la [API oficial](https://docs.searxng.org/dev/search_api.html). No sigue redirecciones del servicio, limita la respuesta a 1 MiB y comparte 30 segundos entre HTTP y filtrado. Se admiten respuestas parciales con motores caídos si conservan resultados públicos válidos. Los resultados pasan los filtros de URL/DNS, deduplicación y caché de éxitos existentes. La lectura Chrome conserva su frontera de red pública y sandbox.
+
+Esta aplicación necesita **Raw Docker Compose**. En Coolify 4.6.0, el despliegue Compose administrado añade `env_file: .env` a cada servicio y expondría las credenciales del bot a SearXNG ([implementación de esa versión](https://github.com/coollabsio/coolify/blob/v4.6.0/app/Jobs/ApplicationDeploymentJob.php#L841)). Raw conserva las variables declaradas por servicio: el bot recibe sus claves explícitas y el buscador no recibe `.env` ni variables del bot. No intentes corregirlo vaciando una lista de secretos en el buscador.
+
+Antes de cambiar Coolify, conserva sus variables actuales y configura los nombres de recursos existentes y el hostname sin esquema ni ruta:
+
+```dotenv
+CATBOT_DATA_VOLUME=1vq9mklpmnkkojoxragj06sr-catsbot-data
+CATBOT_WORKSPACES_VOLUME=1vq9mklpmnkkojoxragj06sr-cat-s-botdark-v1-1vq9mklpmnkkojoxragj06sr-workspaces
+CATBOT_PROXY_NETWORK=1vq9mklpmnkkojoxragj06sr
+CATBOT_DOMAIN=mi.dark-anubis.com
+```
+
+Los dos volúmenes y la red del proxy están marcados `external: true`: Compose falla si faltan y no sustituye el estado por volúmenes vacíos. Conserva las variables de Discord, API, JWT, administrador y Gemini ya configuradas; el fichero no contiene sus valores.
+
+En la configuración de la aplicación establece `build_pack=dockercompose`, la ruta `/docker-compose.yml`, `is_raw_compose_deployment_enabled=true` e `inject_build_args_to_dockerfile=false`. Esto último impide que Coolify añada secretos de construcción al Dockerfile del buscador. Mantén los dominios gestionados de Compose vacíos: las etiquetas del fichero gestionan este hostname. Conserva la opción seccomp de la aplicación para que el helper pueda montar el perfil; el servicio bot también lo declara en Compose. Coolify añade sus etiquetas de administración; no se fijan IDs de contenedor manualmente. Comprueba las etiquetas y redes finales, que SearXNG no reciba variables del bot, la disponibilidad del perfil seccomp para el cliente Compose y los montajes reales antes de recrear el bot. `docker compose config --quiet` solo valida la configuración, no construye ni arranca servicios. La aceptación del despliegue requiere comprobar por separado búsqueda JSON real, lectura Chrome y estado persistente en ese entorno.
+
+## Imagen del bot
+
 El `Dockerfile` compila el panel y mantiene el runtime Python 3.12 de Debian Bookworm. Instala Google Chrome y sus dependencias con `python -m playwright install --with-deps chrome`, además del paquete Python de `requirements.txt`. El lector sigue usando `channel="chrome"` y `chromium_sandbox=True`; una búsqueda no necesita Chrome, pero leer los resultados sí.
 
 La imagen ejecuta el bot como `catsbot`, UID/GID `1000:1000`. El código de `/app` conserva propietario root; solo `/app/bot.log`, `/app/data` y `/app/workspaces` se preparan como escribibles por el usuario del bot. El directorio HOME y los perfiles temporales también pertenecen a ese usuario. No instala navegadores durante el arranque ni cambia permisos de volúmenes automáticamente. `.dockerignore` evita copiar secretos, bases de datos, logs y paquetes de despliegue locales al contexto de la imagen.

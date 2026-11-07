@@ -262,7 +262,7 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
                     replies = [{"choices": [{"finish_reason": "tool_calls", "message": message}]} for message in (
                         {"content": opaque, "tool_calls": [self.fixture.tool_call("read_webpage", first, "read1")]},
                         checkpoint, {"tool_calls": [self.fixture.tool_call("read_webpage", second, "read2")]}, finished)]
-                with patch.object(self.engine.budget, "window", new=AsyncMock(return_value=20000)), patch(
+                with patch.object(self.engine.budget, "window", new=AsyncMock(return_value=32768)), patch(
                         "cogs._llm_moderation.endpoint_json", new=AsyncMock(side_effect=replies)) as provider:
                     result = await self.engine.web_context(job)
                 self.assertEqual(provider.await_count, 4)

@@ -286,7 +286,6 @@ class BotES(commands.Bot):
             "cogs.autoresponses",
             "cogs.custom_commands",
             "cogs.logging",
-            "cogs.rag_scraper",
             "cogs.utilities",
         ]
         for cog in cogs:

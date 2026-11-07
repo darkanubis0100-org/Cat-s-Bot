@@ -40,7 +40,7 @@ class ConversationLatencyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.await_args.kwargs["max_output_tokens"], 1000)
         self.assertNotIn("Deep Think está activo", provider.await_args.args[2][0]["content"])
 
-    async def test_control_and_normal_retrieval_use_small_budgets_but_final_chat_keeps_selector(self):
+    async def test_control_stays_small_and_web_reserves_16k_without_overriding_selectors(self):
         self.db.set_automod_config(10, rules={"llm": {"endpoint_url": "https://provider.example/v1", "model": "strata",
             "chat_reasoning_effort": "high", "web_reasoning_effort": "high"}})
         await self.engine.listen(self.fixture.message(ping=True))
@@ -50,8 +50,9 @@ class ConversationLatencyTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(provider.await_args.kwargs["reasoning_effort"], "none")
             self.assertEqual(provider.await_args.kwargs["max_output_tokens"], 512)
             await self.engine.generate(job, [{"role": "system", "content": "quick research"}], task="web")
-            self.assertEqual(provider.await_args.kwargs["reasoning_effort"], "none")
-            self.assertEqual(provider.await_args.kwargs["max_output_tokens"], 1024)
+            self.assertEqual(provider.await_args.kwargs["reasoning_effort"], "high")
+            self.assertEqual(provider.await_args.kwargs["max_output_tokens"], 16384)
+            self.assertEqual(self.engine.budget_config(job, "web")["output_reserve"], 16384)
             await self.engine.generate(job, [{"role": "system", "content": "final"}])
             self.assertEqual(provider.await_args.kwargs["reasoning_effort"], "high")
             self.assertEqual(provider.await_args.kwargs["max_output_tokens"], 16384)

@@ -362,6 +362,122 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
                 await self.engine.generate(self.job, [{"role": "system", "content": "Answer"}])
         self.assertEqual(provider.await_count, 2)
 
+    async def test_quick_output_limit_preserves_read_evidence_after_one_recovery(self):
+        from cogs._llm_moderation import EndpointIncompleteResponse
+        self.job["deep_think"] = False
+        url = "https://official.example/version"
+        for reason in ("length", "max_output_tokens"):
+            with self.subTest(reason=reason):
+                self.engine.web = SimpleNamespace(close=AsyncMock(), read_webpage=AsyncMock(return_value={
+                    "url": url, "text": "Release 9 is current.", "retrieved_at_utc": "2030-01-02"}))
+                with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=[
+                        self.call("read_webpage", url), EndpointIncompleteResponse(reason), EndpointIncompleteResponse(reason)])) as provider:
+                    result = await self.engine.web_context(self.job)
+                self.assertEqual(provider.await_count, 3)
+                self.assertEqual(result["diagnostics"]["stop_reason"], "endpoint_output_limit")
+                self.assertFalse(result["complete"])
+                self.assertFalse(result["assessment"]["sufficient"])
+                self.assertEqual(result["verified_source_urls"], [url])
+                self.assertEqual(result["page_evidence_untrusted"][0]["text"], "Release 9 is current.")
+                self.assertEqual(result["sources"][0]["retrieved_at_utc"], "2030-01-02")
+
+    async def test_quick_output_limit_never_promotes_search_snippets_to_verified_evidence(self):
+        from cogs._llm_moderation import EndpointIncompleteResponse
+        self.job["deep_think"] = False
+        url = "https://official.example/version"
+        self.engine.web = SimpleNamespace(close=AsyncMock(), search_web=AsyncMock(return_value={"results": [
+            {"url": url, "snippet": "Unverified release 99"}]}))
+        with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=[
+                self.call("search_web", "Example version"), EndpointIncompleteResponse("length"), EndpointIncompleteResponse("length")])) as provider:
+            result = await self.engine.web_context(self.job)
+        self.assertEqual(provider.await_count, 3)
+        self.assertEqual(result["diagnostics"]["stop_reason"], "endpoint_output_limit")
+        self.assertEqual(result["verified_source_urls"], [])
+        self.assertEqual(result["page_evidence_untrusted"], [])
+        self.assertEqual(result["assessment"]["facts"], [])
+        self.assertFalse(result["complete"])
+
+    async def test_quick_output_recovery_can_finish_a_tool_call_before_any_page_was_read(self):
+        from cogs._llm_moderation import EndpointIncompleteResponse
+        self.job["deep_think"] = False
+        url = "https://official.example/version"
+        self.engine.web = SimpleNamespace(close=AsyncMock(), read_webpage=AsyncMock(return_value={
+            "url": url, "text": "Release 9 is current."}))
+        with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=[EndpointIncompleteResponse("length"),
+                self.call("read_webpage", url), {"content": "done"}])) as provider:
+            result = await self.engine.web_context(self.job)
+        self.assertEqual(provider.await_count, 3)
+        for call in provider.await_args_list:
+            self.assertEqual(call.kwargs["max_output_tokens"], 16384)
+            self.assertEqual(call.kwargs["reasoning_effort"], "none")
+        self.assertEqual(self.engine.budget_config(self.job, "web")["output_reserve"], 16384)
+        self.assertIn("read_webpage", [tool["function"]["name"] for tool in provider.await_args_list[1].kwargs["tools"]])
+        self.assertEqual(result["verified_source_urls"], [url])
+        self.assertEqual(result["page_evidence_untrusted"][0]["text"], "Release 9 is current.")
+
+    async def test_quick_output_recovery_does_not_accept_filtering_or_invalid_tool_payloads(self):
+        from cogs._llm_moderation import EndpointIncompleteResponse
+        self.job["deep_think"] = False
+        invalid = {"tool_calls": [{"id": "invalid", "function": {
+            "name": "read_webpage", "arguments": '{"url":"https://official.example/version","extra":"ignored?"}'}}]}
+        for response in (EndpointIncompleteResponse("content_filter"), invalid):
+            with self.subTest(response=type(response).__name__):
+                provider = AsyncMock(side_effect=response) if isinstance(response, Exception) else AsyncMock(return_value=response)
+                with patch("cogs._conversation.request_completion", new=provider):
+                    with self.assertRaises(ValueError):
+                        await self.engine.web_context(self.job)
+                self.assertEqual(provider.await_count, 1)
+
+    async def test_quick_16k_planner_uses_remaining_total_deadline_for_each_dispatch(self):
+        from cogs._llm_moderation import EndpointIncompleteResponse
+        self.job["deep_think"] = False
+        loop, clock = asyncio.get_running_loop(), [asyncio.get_running_loop().time()]
+        url = "https://official.example/version"
+        async def advance(seconds):
+            clock[0] += seconds
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+        async def read(target, **kwargs):
+            await advance(20)
+            return {"url": target, "text": "Release 9 is current."}
+        replies = [self.call("read_webpage", url), EndpointIncompleteResponse("length"), {"content": "done"}]
+        durations, timeouts = iter((35, 10, 10)), []
+        async def provider(*args, **kwargs):
+            timeouts.append(kwargs["timeout_seconds"])
+            async with asyncio.timeout(kwargs["timeout_seconds"]):
+                await advance(next(durations))
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+        self.engine.web = SimpleNamespace(close=AsyncMock(), read_webpage=read)
+        with patch.object(loop, "time", lambda: clock[0]), patch.object(loop, "slow_callback_duration", 1000), \
+                patch("cogs._conversation.request_completion", new=provider):
+            result = await self.engine.web_context(self.job)
+        self.assertEqual(timeouts, [120, 65, 55])
+        self.assertEqual(result["verified_source_urls"], [url])
+        self.assertEqual(result["diagnostics"]["stop_reason"], "planner_stop")
+
+    async def test_quick_exhausted_output_reaches_answer_with_read_material_instead_of_generic_error(self):
+        from cogs._llm_moderation import EndpointIncompleteResponse
+        self.job["deep_think"] = False
+        url = "https://official.example/version"
+        intent = {"tool_calls": [{"id": "intent", "type": "function", "function": {
+            "name": "request_public_web_research", "arguments": json.dumps({"public_brief": {
+                "topic": "Example", "question": "Current Example version?"}})}}]}
+        self.engine.web = SimpleNamespace(close=AsyncMock(), read_webpage=AsyncMock(return_value={
+            "url": url, "text": "Release 9 is current."}))
+        answer = "La documentación consultada indica la versión 9."
+        with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=[intent,
+                self.call("read_webpage", url), EndpointIncompleteResponse("length"),
+                EndpointIncompleteResponse("length"), answer])) as provider:
+            await self.engine.process(self.job)
+        self.assertEqual(provider.await_count, 5)
+        final_context = json.loads(provider.await_args.args[2][1]["content"])["web_research_untrusted"]
+        self.assertEqual(final_context["diagnostics"]["stop_reason"], "endpoint_output_limit")
+        self.assertIn("Release 9 is current.", final_context["page_evidence_untrusted"][0]["text"])
+        self.assertEqual(self.job["message"].reply.await_args.args[0], answer)
+
     async def test_useful_pages_trigger_early_sufficiency_check_without_filling_context(self):
         urls = [f"https://official.example/source{i}" for i in range(3)]
         self.engine.web = SimpleNamespace(close=AsyncMock(), read_webpage=AsyncMock(side_effect=lambda url, **_: {

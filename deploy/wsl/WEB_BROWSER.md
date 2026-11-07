@@ -1,7 +1,14 @@
 # Chrome Headless opcional para las herramientas web
 
-El acceso web se activa por servidor en el panel de IA. DuckDuckGo y Yahoo usan `ddgs`
-primero con `duckduckgo` y, solo ante error o ausencia de resultados públicos válidos, con `yahoo` (sin selección `auto`). Cada intento dispone de hasta 12 segundos, dentro de los 30 segundos de la herramienta; el fallback no consume otra consulta del planificador. La lectura usa Google Chrome instalado, por el canal
+El acceso web se activa por servidor en el panel de IA. La búsqueda consulta la API
+JSON de una instancia privada de SearXNG; el operador debe configurar
+`SEARXNG_BASE_URL` con su URL accesible desde el servicio. El valor predeterminado
+`http://searxng:8080` corresponde al sidecar de [Docker Compose](../docker/README.md),
+no a una instalación WSL independiente. No se instala ni arranca SearXNG desde el bot.
+La búsqueda y su filtrado tienen un plazo de 30 segundos y la respuesta se limita a
+1 MiB; se conservan cinco resultados públicos válidos y caché de éxitos de cinco
+minutos. El endpoint privado solo pertenece al cliente de búsqueda: los filtros
+públicos del lector se mantienen. La lectura usa Google Chrome instalado, por el canal
 `chrome` de Playwright. No se sustituye por Chromium ni se instala un navegador
 al arrancar el bot. Los errores de instalación, sandbox y bloqueo del sitio se
 devuelven como errores de herramienta. Las páginas y búsquedas no reciben la

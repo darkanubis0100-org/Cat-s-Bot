@@ -15,7 +15,7 @@ antes de ejecutar los comandos. Esta guía no contiene el estado de una instalac
 | Aplicación / Python | `/opt/catsbot/app` / `/opt/catsbot/venv` |
 | Credenciales | `/var/lib/catsbot/.env`, modo `0600` |
 | Bases SQLite | `/var/lib/catsbot/data` |
-| Datos RAG | `/var/lib/catsbot/workspaces` |
+| Archivos RAG históricos (función retirada) | `/var/lib/catsbot/workspaces` |
 | Logs | `/var/log/catsbot/bot.log` y journal de systemd |
 
 ## Instalación

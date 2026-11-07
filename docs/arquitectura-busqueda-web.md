@@ -1,4 +1,6 @@
-# Arquitectura actual de búsqueda web
+# Inspección histórica de búsqueda web (6 de noviembre de 2026)
+
+> Esta inspección y su diagrama describen la versión anterior. El código actual usa SearXNG privado; consulta la [guía operativa vigente](investigacion-web.md) y [Docker Compose](../deploy/docker/README.md). Las observaciones de despliegue siguientes conservan su fecha original.
 
 [Ver el diagrama SVG](arquitectura-busqueda-web.svg)
 
