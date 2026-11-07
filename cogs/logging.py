@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 CHANNEL_SETTINGS = (
     ("name", "Nombre"), ("topic", "Tema"), ("type", "Tipo"),
-    ("position", "Posición"), ("category_id", "Categoría"),
+    ("category_id", "Categoría"),
     ("nsfw", "NSFW"), ("slowmode_delay", "Modo lento"),
     ("bitrate", "Bitrate"), ("user_limit", "Límite de usuarios"),
     ("rtc_region", "Región de voz"), ("video_quality_mode", "Calidad de vídeo"),

@@ -150,12 +150,15 @@ class ChannelUpdateLoggingTest(unittest.IsolatedAsyncioTestCase):
     async def test_settings_and_unchanged_events(self):
         await self.cog.on_guild_channel_update(self.channel(), self.channel())
         self.cog._send_log.assert_not_awaited()
+        await self.cog.on_guild_channel_update(self.channel(position=0), self.channel(position=1))
+        self.cog._send_log.assert_not_awaited()
         before = self.channel(slowmode_delay=0, nsfw=False, bitrate=64000, user_limit=0)
         after = self.channel(slowmode_delay=10, nsfw=True, bitrate=96000, user_limit=5, position=3, category_id=300)
         await self.cog.on_guild_channel_update(before, after)
         text = self.sent_text()
-        for value in ("Modo lento", "NSFW", "Bitrate", "Límite de usuarios", "Posición", "Categoría", "Antes", "Después"):
+        for value in ("Modo lento", "NSFW", "Bitrate", "Límite de usuarios", "Categoría", "Antes", "Después"):
             self.assertIn(value, text)
+        self.assertNotIn("Posición", text)
         self.assertTrue(all(call.args[2] == "channel_update" for call in self.cog._send_log.await_args_list))
 
     async def test_category_permission_add_change_remove_use_tristate_and_uncached_targets(self):
