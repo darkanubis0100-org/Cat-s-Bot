@@ -1,3 +1,8 @@
+# Coolify 4.6 only accepts bare/defaulted variables in external volume names.
+x-required-config:
+  data-volume: ${CATBOT_DATA_VOLUME:?Set the existing data volume name}
+  workspaces-volume: ${CATBOT_WORKSPACES_VOLUME:?Set the existing workspaces volume name}
+
 services:
   bot:
     build:
@@ -74,7 +79,7 @@ networks:
 volumes:
   bot-data:
     external: true
-    name: ${CATBOT_DATA_VOLUME:?Set the existing data volume name}
+    name: ${CATBOT_DATA_VOLUME}
   bot-workspaces:
     external: true
-    name: ${CATBOT_WORKSPACES_VOLUME:?Set the existing workspaces volume name}
+    name: ${CATBOT_WORKSPACES_VOLUME}
