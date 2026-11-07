@@ -136,6 +136,52 @@ class ChannelHistoryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.reads, [])
         self.assertTrue(message.reply.await_count)
 
+    async def test_public_research_intent_is_not_overridden_by_matching_channel_names(self):
+        f = self.fixture
+        f.db.set_ai_config(10, ai_web_enabled=1)
+        f.channels[21].name = "📚┃información"
+        f.channels[22] = discord.CategoryChannel(guild=f.guild, state=None, data={
+            "id": "22", "type": 4, "name": "🍉 Información", "position": 0, "permission_overwrites": []})
+        message = f.message(ping=True)
+        message.content = "¿Ahora sí me puedes dar información sobre la RTX 5080 Super y cuándo crees que viene?"
+        intent = self.intent(json.dumps({"public_brief": {"topic": "RTX 5080 Super", "question": message.content}}),
+            name="request_public_web_research")
+        bot = self.reply_message(101, "La petición identifica varios canales.", user_id=999, target=message)
+        followup = self.reply_message(102, "Tu nomás has la investigación.", target=bot)
+        for current in (message, followup):
+            with self.subTest(text=current.content):
+                await self.engine.listen(current)
+                with patch.object(self.engine, "web_context", new=AsyncMock(return_value={"verified_source_urls": []})) as research, \
+                        patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=[intent, "La investigación pública sigue su curso."])):
+                    await self.engine.process(f.cog._queue.get_nowait())
+                research.assert_awaited_once()
+                self.assertEqual(self.reads, [])
+                self.assertNotIn("varios canales", current.reply.await_args.args[0])
+
+    async def test_ordinary_chat_matching_multiple_channels_checks_intent_before_target_error(self):
+        f = self.fixture
+        f.channels[21].name = "📚┃información"
+        f.channels[22] = discord.CategoryChannel(guild=f.guild, state=None, data={
+            "id": "22", "type": 4, "name": "🍉 Información", "position": 0, "permission_overwrites": []})
+        confirmations = []
+        async def provider(*args, **kwargs):
+            names = [tool["function"]["name"] for tool in kwargs.get("tools", [])]
+            if "confirm_channel_history_request" in names:
+                confirmations.append(args[2])
+                return {"content": "DENY"}
+            return {"content": "De nada."} if names else "De nada."
+        for index, text in enumerate(("Gracias por la información", "Gracias por la información sobre el acceso a Internet",
+                "Gracias por la información sobre los permisos", "Ya arreglé mi acceso a Internet; gracias por la información")):
+            with self.subTest(text=text):
+                message = f.message(200 + index, ping=True)
+                message.content = text
+                await self.engine.listen(message)
+                with patch("cogs._conversation.request_completion", new=provider):
+                    await self.engine.process(f.cog._queue.get_nowait())
+                self.assertEqual(len(confirmations), index + 1)
+                self.assertEqual(self.reads, [])
+                self.assertEqual(message.reply.await_args.args[0], "De nada.")
+
     async def test_failed_or_malformed_history_confirmation_never_reads(self):
         invalid = [None, "DENY", {}, self.intent(), self.intent("[]", "confirm_channel_history_request"),
             ValueError("verification_failed"), TimeoutError()]
@@ -213,8 +259,10 @@ class ChannelHistoryTest(unittest.IsolatedAsyncioTestCase):
                 text = "Hola" if mode == "greeting" else "Busca el último mensaje en Server Logs"
                 if mode == "other_guild":
                     text = "Lee https://discord.com/channels/11/21/500"
-                await self.run_request(text, answer="No pude consultar ese canal.")
+                message, _ = await self.run_request(text, answer="No pude consultar ese canal.")
                 self.assertEqual(self.reads, [])
+                if mode == "ambiguous":
+                    self.assertIn("varios canales", message.reply.await_args.args[0])
 
     async def test_permission_revocation_or_embed_edit_during_final_generation_prevents_reply(self):
         f = self.fixture
