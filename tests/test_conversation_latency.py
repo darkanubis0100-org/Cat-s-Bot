@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, patch
 import discord
 
 from api.routes.channel_settings import ChannelSettings
-from cogs._conversation import Conversation, endpoint_config
+from cogs._conversation import Conversation, current_channel_members, endpoint_config
+from cogs._llm_moderation import fingerprint
 from tests import test_conversation_memory as fixtures
 
 
@@ -301,6 +302,198 @@ class ConversationLatencyTest(unittest.IsolatedAsyncioTestCase):
             await budget
         self.assertEqual(job["_timings"]["authorization"], 2.0)
         self.assertEqual(job["_timings"]["budget"], 5.0)
+
+    @staticmethod
+    def rate_limited():
+        return discord.HTTPException(SimpleNamespace(status=429, reason="Too Many Requests",
+            headers={"Retry-After": "0.75"}), {"message": "Rate limited", "retry_after": 0.75})
+
+    async def test_transient_429_before_send_revalidates_and_keeps_generated_answer(self):
+        f = self.fixture
+        message = f.message(ping=True)
+        await self.engine.listen(message)
+        reads = 0
+        async def fetch(message_id):
+            nonlocal reads
+            reads += 1
+            if reads == 3:
+                raise self.rate_limited()
+            return f.messages[message_id]
+        discord.TextChannel.fetch_message.side_effect = fetch
+        with patch("cogs._conversation.asyncio.sleep", new=AsyncMock()) as wait, patch(
+                "cogs._conversation.request_completion", new=AsyncMock(return_value={"content": "La respuesta ya está preparada."})) as provider:
+            await self.engine.process(f.cog._queue.get_nowait())
+        wait.assert_awaited_once_with(0.75)
+        provider.assert_awaited_once()
+        self.assertEqual(message.reply.await_args.args[0], "La respuesta ya está preparada.")
+        self.assertEqual(f.db.get_ai_chat_turns(10, 20)[-1]["content"], "Respuesta")
+
+    async def test_429_wait_does_not_authorize_edited_deleted_or_revoked_source(self):
+        f = self.fixture
+        for change in ("edit", "delete", "revoke"):
+            with self.subTest(change=change):
+                f.role._permissions = discord.Permissions(view_channel=True, send_messages=True, read_message_history=True).value
+                message = f.message(200 + len(f.messages), ping=True)
+                await self.engine.listen(message)
+                reads = 0
+                async def fetch(message_id):
+                    nonlocal reads
+                    reads += 1
+                    if reads == 3:
+                        raise self.rate_limited()
+                    if message_id not in f.messages:
+                        raise discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "deleted")
+                    return f.messages[message_id]
+                async def change_during_wait(seconds):
+                    if change == "edit":
+                        f.messages[message.id] = copy.copy(message)
+                        f.messages[message.id].content = "Edited after generation"
+                    elif change == "delete":
+                        f.messages.pop(message.id)
+                    else:
+                        f.role._permissions = 0
+                discord.TextChannel.fetch_message.side_effect = fetch
+                before = len(f.db.get_ai_chat_turns(10, 20))
+                with patch("cogs._conversation.asyncio.sleep", new=AsyncMock(side_effect=change_during_wait)), patch(
+                        "cogs._conversation.request_completion", new=AsyncMock(return_value={"content": "Must be withheld"})):
+                    await self.engine.process(f.cog._queue.get_nowait())
+                message.reply.assert_not_awaited()
+                self.assertEqual(len(f.db.get_ai_chat_turns(10, 20)), before)
+
+    async def test_reply_chain_authorization_does_not_burst_message_gets(self):
+        f = self.fixture
+        ancestors = [f.message(message_id, user_id=31) for message_id in (82, 83, 84, 85)]
+        target = f.message(90, user_id=999)
+        message = f.message(reference=SimpleNamespace(message_id=90, guild_id=10, channel_id=20, resolved=target))
+        await self.engine.listen(message)
+        job = f.cog._queue.get_nowait()
+        job["source_fingerprints"] = {source.id: fingerprint(source) for source in ancestors}
+        active, peak, requested = 0, 0, []
+        real_sleep = asyncio.sleep
+        async def fetch(message_id):
+            nonlocal active, peak
+            requested.append(message_id)
+            active += 1
+            peak = max(peak, active)
+            try:
+                await real_sleep(0)
+                return f.messages[message_id]
+            finally:
+                active -= 1
+        discord.TextChannel.fetch_message.side_effect = fetch
+        self.assertTrue(await self.engine.unchanged(job))
+        self.assertEqual(set(requested), {82, 83, 84, 85, 90, 100})
+        self.assertEqual(len(requested), 6)
+        self.assertEqual(peak, 1)
+        self.assertEqual(active, 0)
+
+    async def test_failed_permission_snapshot_cancels_and_drains_other_rest_calls(self):
+        f = self.fixture
+        started, cancelled = set(), set()
+        all_started = asyncio.Event()
+        async def pending(label):
+            started.add(label)
+            if len(started) == 3:
+                all_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.add(label)
+        async def roles():
+            await all_started.wait()
+            raise self.rate_limited()
+        f.guild.fetch_roles.side_effect = roles
+        async def channel(channel_id): return await pending("channel")
+        async def member(member_id): return await pending(str(member_id))
+        f.guild.fetch_channel.side_effect = channel
+        f.guild.fetch_member.side_effect = member
+        with self.assertRaises(discord.HTTPException):
+            await current_channel_members(f.guild, 20, (30, 999))
+        self.assertEqual(cancelled, started)
+
+    async def test_exhausted_429_does_not_launch_another_feedback_authorization(self):
+        f = self.fixture
+        message = f.message(ping=True)
+        await self.engine.listen(message)
+        reads = 0
+        async def fetch(message_id):
+            nonlocal reads
+            reads += 1
+            if reads >= 3:
+                raise self.rate_limited()
+            return f.messages[message_id]
+        discord.TextChannel.fetch_message.side_effect = fetch
+        with patch("cogs._conversation.asyncio.sleep", new=AsyncMock()) as wait, patch(
+                "cogs._conversation.request_completion", new=AsyncMock(return_value={"content": "Withhold if not authorized"})) as provider, \
+                self.assertLogs("cogs._conversation", level="WARNING") as logs:
+            await self.engine.process(f.cog._queue.get_nowait())
+        self.assertEqual(reads, 4)
+        wait.assert_awaited_once_with(0.75)
+        provider.assert_awaited_once()
+        message.reply.assert_not_awaited()
+        self.assertEqual(len(f.db.get_ai_chat_turns(10, 20)), 1)
+        self.assertIn("discord_status=429", " ".join(logs.output))
+
+    async def test_cancellation_during_429_wait_releases_authorization_lock(self):
+        f = self.fixture
+        message = f.message(ping=True)
+        await self.engine.listen(message)
+        job = f.cog._queue.get_nowait()
+        entered, exited = asyncio.Event(), asyncio.Event()
+        async def waiting(seconds):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                exited.set()
+        discord.TextChannel.fetch_message.side_effect = self.rate_limited()
+        with patch("cogs._conversation.asyncio.sleep", new=waiting):
+            task = asyncio.create_task(self.engine.unchanged(job))
+            await asyncio.wait_for(entered.wait(), 1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertTrue(exited.is_set())
+        discord.TextChannel.fetch_message.side_effect = lambda message_id: f.messages[message_id]
+        self.assertTrue(await asyncio.wait_for(self.engine.unchanged(job), 1))
+        message.reply.assert_not_awaited()
+
+    async def test_source_429_restarts_trigger_validation_instead_of_reusing_earlier_bytes(self):
+        f = self.fixture
+        source = f.message(85, user_id=31)
+        message = f.message(ping=True)
+        await self.engine.listen(message)
+        job = f.cog._queue.get_nowait()
+        job["source_fingerprints"] = {85: fingerprint(source)}
+        source_attempts, trigger_reads = 0, 0
+        async def fetch(message_id):
+            nonlocal source_attempts, trigger_reads
+            if message_id == 85:
+                source_attempts += 1
+                if source_attempts == 1:
+                    raise self.rate_limited()
+            else:
+                trigger_reads += 1
+            return f.messages[message_id]
+        async def edit_during_wait(seconds):
+            changed = copy.copy(message)
+            changed.content = "Edited while an ancestor was rate limited"
+            f.messages[message.id] = changed
+        discord.TextChannel.fetch_message.side_effect = fetch
+        with patch("cogs._conversation.asyncio.sleep", new=edit_during_wait):
+            self.assertFalse(await self.engine.unchanged(job))
+        self.assertEqual(trigger_reads, 2)
+
+    async def test_deleted_trigger_does_not_start_obsolete_ancestor_gets(self):
+        f = self.fixture
+        target = f.message(90, user_id=999)
+        message = f.message(reference=SimpleNamespace(message_id=90, guild_id=10, channel_id=20, resolved=target))
+        await self.engine.listen(message)
+        discord.TextChannel.fetch_message.reset_mock()
+        discord.TextChannel.fetch_message.side_effect = discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "deleted")
+        with self.assertRaises(discord.NotFound):
+            await self.engine.unchanged(f.cog._queue.get_nowait())
+        discord.TextChannel.fetch_message.assert_awaited_once_with(message.id)
 
 
 class DispatchCallCountTest(unittest.IsolatedAsyncioTestCase):

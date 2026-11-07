@@ -170,7 +170,7 @@ async def current_channel_members(guild, channel_id, user_ids, *, owner_fetch=No
         *(guild.fetch_member(user_id) for user_id in user_ids)]
     if owner_fetch is not None:
         operations.append(owner_fetch(guild.id))
-    roles, channel, *members = await asyncio.gather(*operations)
+    roles, channel, *members = await gather_current(*operations)
     if channel.id != channel_id or channel.guild.id != guild.id or any(role.guild.id != guild.id for role in roles):
         raise ValueError("invalid_guild_channel_or_roles_snapshot")
     view = copy.copy(guild)
@@ -194,8 +194,19 @@ async def current_channel_members(guild, channel_id, user_ids, *, owner_fetch=No
         if isinstance(channel, discord.Thread) and channel.is_private() and not channel.permissions_for(member).manage_threads:
             private_members.append(channel.fetch_member(member.id))
     if private_members:
-        await asyncio.gather(*private_members)
+        await gather_current(*private_members)
     return channel, members
+
+
+async def gather_current(*operations):
+    """Failed authorization/discovery must not leave REST requests running behind it."""
+    tasks = [asyncio.ensure_future(operation) for operation in operations]
+    try:
+        return await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class Conversation:
@@ -205,6 +216,7 @@ class Conversation:
         self.web = None
         self.budget = ConversationBudget()
         self.locks = weakref.WeakValueDictionary()
+        self.authorization_locks = weakref.WeakValueDictionary()
         self.research = ResearchWorkspace()
 
     async def start(self):
@@ -315,7 +327,7 @@ class Conversation:
             self.research.discard(key)
             return None
         try:
-            sources = await asyncio.gather(*(job["message"].channel.fetch_message(int(message_id)) for message_id in provenance))
+            sources = [await job["message"].channel.fetch_message(int(message_id)) for message_id in provenance]
             if any(str(source.id) not in provenance or fingerprint(source) != provenance[str(source.id)]
                    or source.guild.id != key[0] or source.channel.id != key[1] for source in sources):
                 raise ValueError("research_source_changed")
@@ -1097,7 +1109,7 @@ class Conversation:
         links = list(dict.fromkeys(int(message_id) for guild_id, channel_id, message_id in
             DISCORD_MESSAGE_LINK.findall(message.content or "")[:3]
             if int(guild_id) == message.guild.id and int(channel_id) == message.channel.id))
-        pending = [message, *await asyncio.gather(*(load(message_id) for message_id in links))]
+        pending = [message, *[await load(message_id) for message_id in links]]
         sources, seen = [], set()
         while pending and len(sources) < MAX_REFERENCE_MESSAGES:
             next_ids = []
@@ -1119,7 +1131,7 @@ class Conversation:
                     if origin:
                         next_ids.append(origin)
             next_ids = [message_id for message_id in dict.fromkeys(next_ids) if message_id not in seen]
-            pending = await asyncio.gather(*(load(message_id) for message_id in next_ids[:MAX_REFERENCE_MESSAGES - len(sources)]))
+            pending = [await load(message_id) for message_id in next_ids[:MAX_REFERENCE_MESSAGES - len(sources)]]
         return sources
 
     async def source_images(self, sources, llm):
@@ -1312,6 +1324,28 @@ class Conversation:
         return fingerprint(message) == job["fingerprint"]
 
     async def unchanged(self, job, *, check_sources=True):
+        message = job["message"]
+        key = (message.guild.id, message.channel.id)
+        lock = self.authorization_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            for attempt in range(2):
+                try:
+                    return await self.unchanged_snapshot(job, check_sources=check_sources)
+                except discord.HTTPException as exc:
+                    if exc.status != 429 or attempt:
+                        raise
+                    headers = getattr(exc.response, "headers", {})
+                    try:
+                        delay = float(headers.get("Retry-After", headers.get("X-RateLimit-Reset-After")))
+                    except (TypeError, ValueError):
+                        raise exc
+                    if not 0 <= delay <= 30:
+                        raise
+                    logger.warning("Conversation Discord authorization retry status=429 retry_after_s=%.3f", delay)
+                    # Keep the channel quiet, then refetch every source and permission; reuse no partial snapshot.
+                    await asyncio.sleep(delay)
+
+    async def unchanged_snapshot(self, job, *, check_sources=True):
         if not await self.scope_current(job):
             return False
         message = job["message"]
@@ -1325,10 +1359,10 @@ class Conversation:
         target_id = job.get("member_permissions_target_id")
         if target_id is not None and target_id not in member_ids:
             member_ids.append(target_id)
-        live, snapshot, *sources = await asyncio.gather(message.channel.fetch_message(message.id),
-            current_channel_members(message.guild, message.channel.id, tuple(member_ids),
-                owner_fetch=getattr(self.bot, "fetch_guild", None)),
-            *(message.channel.fetch_message(message_id) for message_id in expected_sources))
+        live = await message.channel.fetch_message(message.id)
+        sources = [await message.channel.fetch_message(message_id) for message_id in expected_sources]
+        snapshot = await current_channel_members(message.guild, message.channel.id, tuple(member_ids),
+            owner_fetch=getattr(self.bot, "fetch_guild", None))
         channel, members = snapshot
         if job.get("origin") == "deepthink_command":
             if not self.valid_command_anchor(job, live):
@@ -1398,7 +1432,7 @@ class Conversation:
                     if await self.timed(job, "authorization", self.unchanged(job)):
                         await message.reply("🐾 Configura el endpoint y modelo de AI-Mod para usar Strata.", mention_author=False)
                     return
-                prepared = asyncio.gather(self.memories(message), self.reference_sources(message, cache=job.get("_source_cache")))
+                prepared = gather_current(self.memories(message), self.reference_sources(message, cache=job.get("_source_cache")))
                 preparation = [
                     asyncio.create_task(self.timed(job, "authorization", self.unchanged(job, check_sources=False))),
                     asyncio.create_task(self.timed(job, "context", prepared)),
@@ -1745,7 +1779,10 @@ class Conversation:
                 code = str(exc) if str(exc) in {"endpoint_incomplete_response", "endpoint_invalid_tool_calls", "endpoint_invalid_tool_call",
                     "endpoint_invalid_content", "invalid_conversation_intent", "invalid_web_brief_arguments", "invalid_web_arguments",
                     "research_missing_report", "research_no_progress", "research_checkpoint_required"} else ""
-                logger.warning("Conversation failed guild=%s message=%s category=%s code=%s", message.guild.id, message.id, type(exc).__name__, code)
+                logger.warning("Conversation failed guild=%s message=%s category=%s code=%s discord_status=%s",
+                    message.guild.id, message.id, type(exc).__name__, code, exc.status if isinstance(exc, discord.HTTPException) else "")
+                if isinstance(exc, discord.HTTPException) and exc.status == 429:
+                    return
                 try:
                     if await self.unchanged(job):
                         await message.reply("🐾 No pude completar la respuesta. Inténtalo más tarde.", mention_author=False,
