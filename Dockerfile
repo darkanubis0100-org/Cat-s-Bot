@@ -11,7 +11,7 @@ FROM python:3.12-slim-bookworm
 WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ffmpeg libopus0 ca-certificates && \
+    ffmpeg libopus0 libatomic1 ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && \
