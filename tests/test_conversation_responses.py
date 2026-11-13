@@ -154,19 +154,21 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
         for protocol_index, protocol in enumerate(("chat_completions", "responses")):
             self.db.set_automod_config(10, rules={"llm": {"endpoint_url": "https://provider.example/v1",
                 "api_type": protocol, "model": "fictitious", "enabled": False}})
-            for invalid in (False, True):
-                with self.subTest(protocol=protocol, invalid=invalid):
-                    message = self.fixture.message(400 + protocol_index * 2 + invalid, ping=True)
+            for form_index, form in enumerate(("canonical", "repair", "flat", "repair_flat")):
+                with self.subTest(protocol=protocol, form=form):
+                    invalid = form.startswith("repair")
+                    message = self.fixture.message(400 + protocol_index * 4 + form_index, ping=True)
                     message.content = brief["question"]
                     await self.engine.listen(message)
-                    args = {"query": "Example listing"} if invalid else {"public_brief": brief}
+                    args = {"query": "Example listing"} if invalid else (brief if form == "flat" else {"public_brief": brief})
+                    repaired = brief if form == "repair_flat" else {"public_brief": brief}
                     if protocol == "responses":
                         replies = [response(reasoning("INITIAL_OPAQUE_SIDECAR"), function_item("request_public_web_research", args, "first", "first_item"))]
                         if invalid:
-                            replies.append(response(function_item("request_public_web_research", {"public_brief": brief}, "repair", "repair_item")))
+                            replies.append(response(function_item("request_public_web_research", repaired, "repair", "repair_item")))
                         replies.append(response(text_item("Example remains privately held.")))
                     else:
-                        arguments = [args, {"public_brief": brief}] if invalid else [args]
+                        arguments = [args, repaired] if invalid else [args]
                         replies = [{"choices": [{"finish_reason": "tool_calls", "message": {"content": None,
                             "tool_calls": [{"id": f"call{index}", "type": "function", "function": {
                                 "name": "request_public_web_research", "arguments": json.dumps(value)}}]}}]}
@@ -176,6 +178,7 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
                             "cogs._llm_moderation.endpoint_json", new=AsyncMock(side_effect=replies)) as provider:
                         await self.engine.process(self.fixture.cog._queue.get_nowait())
                     self.assertEqual(provider.await_count, 3 if invalid else 2)
+                    research.assert_awaited_once()
                     self.assertEqual(research.await_args.args[0]["public_web_brief"], brief)
                     self.assertEqual(message.reply.await_args.args[0], "Example remains privately held.")
                     if invalid:

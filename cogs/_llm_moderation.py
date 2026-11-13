@@ -196,7 +196,7 @@ async def request_completion(session, cfg, messages, *, moderation=False, tools=
     content = choice["message"].get("content")
     if structured:
         calls = choice["message"].get("tool_calls") or []
-        if not isinstance(calls, list) or len(calls) > 4 or calls and not tools:
+        if not isinstance(calls, list) or calls and not tools:
             raise ValueError("endpoint_invalid_tool_calls")
         if choice.get("finish_reason") == "tool_calls" and not calls:
             raise ValueError("endpoint_invalid_tool_calls")

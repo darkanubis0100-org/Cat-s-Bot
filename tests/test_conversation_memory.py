@@ -316,6 +316,10 @@ class ConversationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         failures = [{"content": "No tool"}, {"tool_calls": [{"id": "repair", "type": "function", "function": {
             "name": "request_public_web_research", "arguments": json.dumps({"public_brief": {
                 "topic": "Example", "question": "password: private-secret"}})}}]}]
+        failures.extend({"tool_calls": [{"id": "repair", "type": "function", "function": {
+            "name": "request_public_web_research", "arguments": json.dumps(arguments)}}]}
+            for arguments in ({"topic": "Example", "question": "password: private-secret"},
+                              {"topic": "Example", "question": "Public question", "extra": "private-secret"}))
         for index, repair in enumerate(failures):
             message = self.message(300 + index, ping=True)
             await self.engine.listen(message)

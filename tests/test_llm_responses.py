@@ -81,7 +81,6 @@ class ResponsesProtocolTests(unittest.IsolatedAsyncioTestCase):
             response({"type": "web_search_call", "status": "completed"}), response({**call, "name": "unoffered"}),
             response({**call, "call_id": "bad/id"}), response(call, deepcopy(call)), response({**call, "arguments": "not JSON"}),
             response({**call, "arguments": "null"}), response({**call, "arguments": "{}" + " " * 4097}),
-            response(*[{**call, "call_id": f"call_{index}"} for index in range(5)]),
             response({**output_text("Text"), "status": "incomplete"}), {"output_text": "SDK helper is not the JSON wire format"}]
         for item in invalid:
             with self.subTest(item=item), patch("cogs._llm_moderation.endpoint_json", AsyncMock(return_value=item)):
@@ -90,6 +89,31 @@ class ResponsesProtocolTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("private-provider-body", str(error.exception))
         with patch("cogs._llm_moderation.endpoint_json", AsyncMock(return_value=response(call))), self.assertRaises(ValueError):
             await request_completion(None, self.cfg, [], moderation=True)
+
+    async def test_five_tools_preserve_every_call_and_reject_an_invalid_last_call(self):
+        from cogs._conversation import WEB_TOOLS
+        for protocol in ("chat_completions", "responses"):
+            for name, key in (("search_web", "query"), ("read_webpage", "url")):
+                for invalid in (None, "unoffered", "duplicate_id", "oversized_arguments"):
+                    with self.subTest(protocol=protocol, name=name, invalid=invalid):
+                        calls = [{"id": f"call{i}", "type": "function", "function": {
+                            "name": name, "arguments": json.dumps({key: f"https://official.example/{i}"})}} for i in range(5)]
+                        if invalid == "unoffered":
+                            calls[-1]["function"]["name"] = "private_unoffered_tool"
+                        elif invalid == "duplicate_id":
+                            calls[-1]["id"] = calls[0]["id"]
+                        elif invalid == "oversized_arguments":
+                            calls[-1]["function"]["arguments"] = "private-payload" * 400
+                        raw = (response(*[{"type": "function_call", "call_id": call["id"], **call["function"]} for call in calls])
+                            if protocol == "responses" else {"choices": [{"finish_reason": "tool_calls", "message": {"tool_calls": calls}}]})
+                        with patch("cogs._llm_moderation.endpoint_json", AsyncMock(return_value=raw)):
+                            if invalid:
+                                with self.assertRaises(ValueError) as error:
+                                    await request_completion(None, {**self.cfg, "api_type": protocol}, [], tools=WEB_TOOLS, structured=True)
+                                self.assertNotIn("private-", str(error.exception))
+                            else:
+                                result = await request_completion(None, {**self.cfg, "api_type": protocol}, [], tools=WEB_TOOLS, structured=True)
+                                self.assertEqual(result["tool_calls"], calls)
 
     async def test_moderation_json_contract_still_uses_strict_decision_validation(self):
         message = SimpleNamespace(id=10, author=SimpleNamespace(id=20), content="insulto literal")

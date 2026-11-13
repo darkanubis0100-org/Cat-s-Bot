@@ -46,6 +46,9 @@ def source_url(value):
 
 
 def web_brief_arguments(arguments):
+    # Some providers omit the wrapper; the public-data checks still apply.
+    if isinstance(arguments, dict) and set(arguments) == {"topic", "question"}:
+        return public_brief(arguments)
     if not isinstance(arguments, dict) or set(arguments) != {"public_brief"}:
         raise ValueError("invalid_web_brief_arguments")
     return public_brief(arguments["public_brief"])
@@ -899,10 +902,12 @@ class Conversation:
                         if not isinstance(arguments, dict) or set(arguments) != {key} or not isinstance(arguments[key], str) or not 1 <= len(arguments[key].strip()) <= limit:
                             raise ValueError("invalid_web_arguments")
                         argument = " ".join(arguments[key].split()) if key == "query" else arguments[key].strip()
+                        batch.append((name, argument))
+                    # Validate the entire batch before any external action.
+                    for call, (name, argument) in zip(calls, batch):
                         normalized_url = source_url(argument) if name == "read_webpage" else None
                         request_key = (name, normalized_url if name == "read_webpage" else argument)
                         ledger_urls = {source_url(source["url"]) for fact in (ledger or {}).get("facts", []) for source in fact["support"]}
-                        batch.append((name, argument))
                         if not await self.timed(job, "authorization", self.unchanged(job)):
                             return None
                         if not deep and quick_counts[name] >= quick_limits[name]:

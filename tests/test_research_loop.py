@@ -101,22 +101,40 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_normal_retrieval_caps_tools_and_passes_read_passages_without_claiming_completion(self):
         self.job["deep_think"] = False
-        self.engine.web = SimpleNamespace(search_web=AsyncMock(return_value={"results": [
-            {"url": f"https://official.example/{index}"} for index in range(4)]}), close=AsyncMock(),
-            read_webpage=AsyncMock(side_effect=lambda url, **_: {"url": url, "text": "Memory: 16 GB.", "retrieved_at_utc": "2030-01-02"}))
-        replies = [
-            {"tool_calls": [self.fixture.tool_call("search_web", f"query {i}", f"search{i}") for i in range(3)]},
-            {"tool_calls": [self.fixture.tool_call("read_webpage", f"https://official.example/{i}", f"read{i}") for i in range(4)]}]
-        with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)) as provider:
-            result = await self.engine.web_context(self.job)
-        self.assertEqual(provider.await_count, 2)
-        self.assertEqual(self.engine.web.search_web.await_count, 2)
-        self.assertEqual(self.engine.web.read_webpage.await_count, 3)
-        self.assertEqual(result["retrieval_mode"], "quick")
-        self.assertFalse(result["complete"])
-        self.assertFalse(result["assessment"]["sufficient"])
-        self.assertEqual(len(result["page_evidence_untrusted"]), 3)
-        self.assertIn("Memory: 16 GB.", json.dumps(result["page_evidence_untrusted"]))
+        for source_limit in (3, 5):
+            with self.subTest(source_limit=source_limit):
+                self.fixture.db.set_ai_config(10, ai_web_max_sources=source_limit)
+                self.job["cfg"] = self.fixture.db.get_ai_config(10)
+                self.engine.web = SimpleNamespace(search_web=AsyncMock(return_value={"results": [
+                    {"url": f"https://official.example/{index}"} for index in range(5)]}), close=AsyncMock(),
+                    read_webpage=AsyncMock(side_effect=lambda url, **_: {"url": url, "text": "Memory: 16 GB.", "retrieved_at_utc": "2030-01-02"}))
+                batches = [
+                    [self.fixture.tool_call("search_web", f"query {i}", f"search{i}") for i in range(5)],
+                    [self.fixture.tool_call("read_webpage", f"https://official.example/{i}", f"read{i}") for i in range(5)]]
+                replies = [{"choices": [{"finish_reason": "tool_calls", "message": {"tool_calls": calls}}]} for calls in batches]
+                with patch("cogs._llm_moderation.endpoint_json", new=AsyncMock(side_effect=replies)) as provider:
+                    result = await self.engine.web_context(self.job)
+                self.assertEqual(provider.await_count, 2)
+                self.assertEqual(self.engine.web.search_web.await_count, 2)
+                self.assertEqual(self.engine.web.read_webpage.await_count, source_limit)
+                self.assertEqual(result["retrieval_mode"], "quick")
+                self.assertFalse(result["complete"])
+                self.assertFalse(result["assessment"]["sufficient"])
+                self.assertEqual(len(result["page_evidence_untrusted"]), source_limit)
+                self.assertIn("Memory: 16 GB.", json.dumps(result["page_evidence_untrusted"]))
+
+    async def test_invalid_fifth_web_arguments_prevent_every_effect_in_the_batch(self):
+        for name, key in (("search_web", "query"), ("read_webpage", "url")):
+            with self.subTest(name=name):
+                self.engine.web = SimpleNamespace(close=AsyncMock(), search_web=AsyncMock(return_value={"results": []}),
+                    read_webpage=AsyncMock(return_value={"text": "Public page"}))
+                calls = [self.fixture.tool_call(name, f"https://official.example/{i}", f"call{i}") for i in range(5)]
+                calls[-1]["function"]["arguments"] = json.dumps({key: "public", "extra": "private-payload"})
+                with patch("cogs._conversation.request_completion", new=AsyncMock(return_value={"tool_calls": calls})):
+                    with self.assertRaisesRegex(ValueError, "invalid_web_arguments"):
+                        await self.engine.web_context(self.job)
+                self.engine.web.search_web.assert_not_awaited()
+                self.engine.web.read_webpage.assert_not_awaited()
 
     async def test_standard_deadline_is_configurable_and_covers_planning_search_and_reading(self):
         self.job["deep_think"] = False
