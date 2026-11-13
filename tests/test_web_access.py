@@ -170,6 +170,8 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(result["results"][0]["title"]), 300)
             self.assertEqual(len(result["results"][0]["snippet"]), 1000)
             self.assertEqual(result["results"][0]["published_at_untrusted"], "2030-01-01")
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(result["backend_degraded"])
             result["results"][0]["url"] = "tampered"
             cached = await web.search_web("test")
             self.assertEqual(cached["results"][0]["url"], "https://example.com/x")
@@ -178,9 +180,8 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
             search.assert_awaited_once_with("test")
         await web.close()
 
-    async def test_failed_empty_and_malformed_responses_are_not_cached(self):
-        for payload in (None, [], {}, {"results": None}, {"results": []},
-                        {"results": [None, {}, {"url": "http://127.0.0.1"}]},
+    async def test_failed_and_malformed_responses_are_not_cached(self):
+        for payload in (None, [], {}, {"results": None},
                         RuntimeError("private provider detail")):
             with self.subTest(payload=type(payload).__name__):
                 web = WebAccess()
@@ -191,6 +192,24 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
                             await web.search_web("public query")
                         self.assertNotIn("private", str(error.exception))
                 self.assertEqual(search.await_count, 2)
+                await web.close()
+
+    async def test_valid_empty_results_preserve_degradation_without_errors_or_caching(self):
+        for payload in ({"results": []},
+                        {"results": [], "unresponsive_engines": [["engine", "PRIVATE_ENGINE_DETAIL"]]},
+                        {"results": [None, {}, {"url": "http://127.0.0.1"}]}):
+            with self.subTest(degraded=bool(payload.get("unresponsive_engines"))):
+                web = WebAccess()
+                with patch.object(web, "_search", AsyncMock(return_value=payload)) as search:
+                    for _ in range(2):
+                        result = await web.search_web("public query")
+                        self.assertEqual(result["status"], "no_results")
+                        self.assertEqual(result["results"], [])
+                        self.assertEqual(result["backend_degraded"], bool(payload.get("unresponsive_engines")))
+                        self.assertNotIn("PRIVATE_ENGINE_DETAIL", str(result))
+                        self.assertNotIn("error", result)
+                self.assertEqual(search.await_count, 2)
+                self.assertFalse(web._cache)
                 await web.close()
 
     async def test_result_count_is_bounded(self):
@@ -358,6 +377,20 @@ class BrowserHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.url_patch.stop()
         await self.web.close()
 
+    async def test_documentation_survives_duplicate_navigation_and_fragment_links(self):
+        docs = "https://docs.example/wiki/x/public"
+        self.document["links"] = ([{"title": "Home", "url": "https://example.com/#top", "navigation": True}] * 12
+            + [{"title": f"Navigation {i}", "url": f"https://example.com/nav{i}", "navigation": True} for i in range(12)]
+            + [{"title": "", "url": docs}, {"title": "Documentation", "url": docs + "#section"},
+               {"title": "Private", "url": "http://127.0.0.1/"}])
+        result = await self.web.read_webpage("https://example.com/")
+        urls = [link["url"] for link in result["links"]]
+        self.assertEqual(urls[0], docs)
+        self.assertEqual(urls.count(docs), 1)
+        self.assertNotIn("https://example.com/", urls)
+        self.assertNotIn("http://127.0.0.1/", urls)
+        self.assertLessEqual(len(urls), 10)
+
     async def test_exact_user_agent_and_sandbox_are_applied(self):
         await self.web.read_webpage("https://example.com/")
         self.assertEqual(self.browser.new_context.call_args.kwargs["user_agent"],
@@ -501,6 +534,19 @@ class ChromeFixtureTests(unittest.IsolatedAsyncioTestCase):
                     status, body = 403, b"<main>Request denied</main>"
                 elif b" /table " in request:
                     body = b"<main><table><tr><td>Memoria</td><td>16 GB</td></tr><tr><td>Potencia</td><td>360 W</td></tr></table></main>"
+                elif b" /links " in request:
+                    body = ("<nav>" + "".join(f"<a href='/nav{i}'>Navigation</a>" for i in range(20)) + "</nav>"
+                        "<main>Public product information.<span hidden>Useful hidden specification.</span>"
+                        "<a href='https://docs.example/wiki/x/public' aria-label='Documentation'><svg></svg></a>"
+                        "<a href='https://guide.example/product'><img alt='User manual'></a>"
+                        "<a href='#top'>Same page</a></main>").encode()
+                elif b" /article-candidates " in request or b" /article-body-fallback " in request:
+                    article = "<p>Card X has 384 GB. The complete server has 2304 GB.</p>" * 12
+                    article += "<aside>Technical infobox: 400 W.</aside><form>Public price: 99.</form>"
+                    tag = "section" if b" /article-body-fallback " in request else "article"
+                    body = ("<article>Sign in / Register</article><nav>Navigation noise</nav>"
+                        + f"<{tag}>{article}</{tag}>"
+                        + "<article itemprop='comment'>" + "COMMENT NOISE " * 300 + "</article><footer>Footer noise</footer>").encode()
                 elif b" /transient " in request:
                     self.transient_calls += 1
                     status = 503 if self.transient_calls == 1 else 200
@@ -560,6 +606,26 @@ class ChromeFixtureTests(unittest.IsolatedAsyncioTestCase):
             await self.web.read_webpage("http://fixture.example/redirect")
         self.assertTrue(all(host != "127.0.0.1" for host, _ in self.connections))
         self.assertIsNone(self.web._browser)
+
+    async def test_accessible_documentation_links_survive_navigation_and_hidden_article_text(self):
+        result = await self.web.read_webpage("http://fixture.example/links")
+        self.assertIn("Useful hidden specification.", result["text"])
+        self.assertEqual(result["links"][:2], [
+            {"title": "Documentation", "url": "https://docs.example/wiki/x/public"},
+            {"title": "User manual", "url": "https://guide.example/product"}])
+        self.assertNotIn("http://fixture.example/links", [link["url"] for link in result["links"]])
+        self.assertLessEqual(len(result["links"]), 10)
+
+    async def test_article_selection_skips_login_widget_and_falls_back_to_clean_body(self):
+        for path in ("article-candidates", "article-body-fallback"):
+            with self.subTest(path=path):
+                result = await self.web.read_webpage("http://fixture.example/" + path)
+                self.assertIn("Card X has 384 GB. The complete server has 2304 GB.", result["text"])
+                self.assertIn("Technical infobox: 400 W.", result["text"])
+                self.assertIn("Public price: 99.", result["text"])
+                self.assertNotIn("COMMENT NOISE", result["text"])
+                self.assertNotIn("Navigation noise", result["text"])
+                self.assertNotIn("Footer noise", result["text"])
 
     async def test_dynamic_table_and_transient_recovery(self):
         result = await self.web.read_webpage("http://fixture.example/dynamic")

@@ -31,6 +31,20 @@ def response(*items, **kwargs):
 class ResponsesProtocolTests(unittest.IsolatedAsyncioTestCase):
     cfg = {"endpoint_url": "https://llm.example/v1", "api_key": "", "model": "selected-model", "api_type": "responses"}
 
+    async def test_required_tool_choice_is_opt_in_for_both_protocols(self):
+        for protocol in ("chat_completions", "responses"):
+            for mode in ("auto", "required"):
+                with self.subTest(protocol=protocol, mode=mode):
+                    function = {"name": "search_web", "arguments": '{"query":"public"}'}
+                    native = (response({"type": "function_call", "id": "item", "call_id": "call", **function})
+                        if protocol == "responses" else {"choices": [{"finish_reason": "tool_calls", "message": {
+                            "tool_calls": [{"id": "call", "type": "function", "function": function}]}}]})
+                    with patch("cogs._llm_moderation.endpoint_json", AsyncMock(return_value=native)) as endpoint:
+                        result = await request_completion(None, {**self.cfg, "api_type": protocol}, [], tools=TOOLS,
+                            structured=True, **({"tool_choice": mode} if mode == "required" else {}))
+                    self.assertEqual(endpoint.await_args.args[2]["tool_choice"], mode)
+                    self.assertEqual(result["tool_calls"][0]["function"]["name"], "search_web")
+
     async def test_text_vision_flat_tools_and_stateless_wire_contract(self):
         messages = [{"role": "system", "content": "Instructions"}, {"role": "user", "content": [
             {"type": "text", "text": "Question"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2U=", "detail": "low"}}]}]

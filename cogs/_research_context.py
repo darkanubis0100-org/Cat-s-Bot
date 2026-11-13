@@ -39,25 +39,60 @@ def public_brief(value):
     return {key: " ".join(text.split()) for key, text in value.items()}
 
 
+def requests_documentation(query):
+    words = {word.strip(".,;:!?¿¡()[]{}\"'").casefold() for word in query.split()}
+    return bool(words & {"spec", "specs", "specifications", "especificaciones", "doc", "docs", "documentation",
+                         "documentación", "documentacion", "manual", "reference", "referencia"}
+                or re.search(r"\bficha t[eé]cnica\b", query, re.I))
+
+
 def select_passages(text, query, byte_budget):
-    """Rank paragraph windows, then restore page order; UTF-8 bytes bound fallback tokens."""
+    """Keep literal table blocks together; rank other windows and restore page order."""
     budget = max(0, int(byte_budget))
     if len(text.encode("utf-8")) <= budget:
         return {"text": text, "text_truncated": False, "original_text_chars": len(text)}
     terms = set(re.findall(r"[^\W_]{3,}", query.casefold()))
-    chunks = []
-    for paragraph in re.split(r"\n\s*\n", text):
-        # Overlap avoids dropping a fact spanning an extraction window.
-        for start in range(0, len(paragraph), 1200):
-            chunk = paragraph[start:start + 1600].strip()
-            if chunk:
-                chunks.append(chunk)
-    ranked = sorted(range(len(chunks)), key=lambda i: (-sum(term in chunks[i].casefold() for term in terms), i))
+    paragraphs = [part.strip(" \r\n") for part in re.split(r"\n\s*\n", text) if part.strip()]
+    chunks, seen, index = [], set(), 0
+    while index < len(paragraphs):
+        paragraph = paragraphs[index]
+        end = index + 1
+        # DOM tables can arrive as one paragraph per cell. Keep consecutive short
+        # labels/values, including their heading and units, instead of ranking cells.
+        if len(paragraph) <= 160:
+            while end < len(paragraphs) and len(paragraphs[end]) <= 160:
+                end += 1
+            # The preceding short heading carries the variant/scope of this table.
+            if end < len(paragraphs) and "\t" in paragraphs[end] and "\n" in paragraphs[end]:
+                end += 1
+        run = paragraphs[index:end]
+        structured = (any("\t" in part and "\n" in part for part in run) or
+                      len(run) >= 5 and sum(bool(re.search(r"\d", part)) for part in run) >= 3)
+        if structured:
+            chunks.append(("\n\n".join(run), True))
+            index = end
+            continue
+        # Process the short run once; rescanning each suffix would be quadratic.
+        for paragraph in run:
+            # Overlap avoids dropping a fact spanning an extraction window.
+            for start in range(0, len(paragraph), 1200):
+                chunk = paragraph[start:start + 1600].strip()
+                if chunk and chunk not in seen:
+                    chunks.append((chunk, False))
+                    seen.add(chunk)
+        index = end
+    structured_request = requests_documentation(query)
+    ranked = sorted(range(len(chunks)), key=lambda i: (
+        -(len(terms & set(re.findall(r"[^\W_]{3,}", chunks[i][0].casefold())))
+          + 3 * (structured_request and chunks[i][1])), i))
     selected, remaining = {}, budget
     for index in ranked:
-        chunk = chunks[index]
+        chunk, structured = chunks[index]
         if remaining < 64:
             break
+        if structured and len(chunk.encode("utf-8")) > remaining - 2:
+            # A detached value or half a table is not a reliable relation.
+            continue
         data = chunk.encode("utf-8")[:max(0, remaining - 2)]
         excerpt = data.decode("utf-8", errors="ignore")
         selected[index] = excerpt
@@ -118,17 +153,30 @@ def bound_research(web, byte_budget):
     observations = result.get("diagnostics", {}).get("observations", [])
     while observations and size() > limit:
         observations.pop(0)
-    for key in ("results_untrusted", "search_result_urls", "sources", "verified_source_urls"):
+    passages = result.get("page_evidence_untrusted", [])
+    for key in ("results_untrusted", "search_result_urls", *(() if passages else ("sources", "verified_source_urls"))):
         while result.get(key) and size() > limit:
             result[key].pop()
-    passages = result.get("page_evidence_untrusted", [])
+
+    def retain_page_provenance():
+        urls = {page["url"] for page in passages}
+        if "verified_source_urls" in result:
+            result["verified_source_urls"] = [url for url in result["verified_source_urls"] if url in urls]
+        if "sources" in result:
+            result["sources"] = [source for source in result["sources"] if source.get("url") in urls]
+
+    if passages:
+        retain_page_provenance()
     while len(passages) > 1 and size() > limit:
         passages.pop()
+        retain_page_provenance()
         result["page_evidence_truncated"] = True
     if passages:
         page = passages[0]
         while page.get("text") and size() > limit:
-            page["text"] = page["text"][:max(0, len(page["text"]) - max(1, (size() - limit) // 2))]
+            available = max(0, len(page["text"].encode("utf-8")) - (size() - limit) - 16)
+            selected = select_passages(page["text"], result.get("public_brief", {}).get("question", ""), available)
+            page["text"] = selected["text"]
             page["text_truncated"] = result["page_evidence_truncated"] = True
     if size() <= limit:
         return result

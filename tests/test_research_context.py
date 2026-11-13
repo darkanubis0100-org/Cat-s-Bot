@@ -1,4 +1,5 @@
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,60 @@ class ResearchContextTest(unittest.TestCase):
         self.assertIn("Example release 9 is current", result["text"])
         self.assertTrue(result["text_truncated"])
         self.assertLessEqual(len(result["text"].encode("utf-8")), 500)
+
+    def test_late_table_keeps_headers_rows_units_and_scope_under_utf8_budget(self):
+        header = "Modelo\tMemoria integrada\tMemoria ampliable\tCapacidad máxima\tFormato"
+        rows = ["Card Pro-X\t128 GB\t256 GB\t384 GB\tTarjeta PCIe",
+                "System Max-Y\t256 GB\t2,048 GB\t2,304 GB\tServidor completo"]
+        table = "Especificaciones por variante\n" + "\n".join([header, *rows])
+        for layout in (table, table.replace("\t", "\n\n").replace("\n", "\n\n")):
+            with self.subTest(flattened="\t" not in layout):
+                text = "\n\n".join(["Example Graphics brings powerful graphics experiences. " * 30] * 20 + [layout])
+                result = select_passages(text, "Dame specs de la tarjeta más potente de Example Graphics", 800)
+                selected = result["text"]
+                for token in ("Modelo", "Memoria integrada", "Memoria ampliable", "Capacidad máxima", "Formato",
+                              "Card Pro-X", "128 GB", "384 GB", "Tarjeta PCIe", "System Max-Y", "2,304 GB", "Servidor completo"):
+                    self.assertIn(token, selected)
+                self.assertLess(selected.index("Modelo"), selected.index("Card Pro-X"))
+                self.assertLess(selected.index("Card Pro-X"), selected.index("System Max-Y"))
+                self.assertLessEqual(len(selected.encode("utf-8")), 800)
+                self.assertTrue(result["text_truncated"])
+
+    def test_whole_context_bound_reselects_evidence_instead_of_cutting_its_prefix(self):
+        table = "Model\tCapacity\tScope\nCard X\t384 GB\tPCIe card\nSystem Y\t2,304 GB\tWhole server"
+        text = "\n\n".join(["Example Graphics marketing without specifications. " * 30] * 8 + [table])
+        web = {"public_brief": {"topic": "Example Graphics", "question": "Dame specs de Example Graphics"},
+               "page_evidence_untrusted": [{"url": "https://docs.example/specs", "text": text}],
+               "verified_source_urls": ["https://docs.example/specs"],
+               "sources": [{"url": "https://docs.example/specs", "kind": "page_read"}],
+               "assessment": {"sufficient": False, "facts": [], "gaps": []}, "complete": False}
+        bounded = bound_research(web, 800)
+        self.assertIn(table, bounded["page_evidence_untrusted"][0]["text"])
+        self.assertLessEqual(len(json.dumps(bounded, ensure_ascii=False).encode("utf-8")), 800)
+        self.assertFalse(bounded["assessment"]["sufficient"])
+        self.assertEqual(bounded["verified_source_urls"], ["https://docs.example/specs"])
+        self.assertEqual(bounded["sources"][0]["url"], "https://docs.example/specs")
+
+    def test_table_and_its_variant_heading_are_never_separated(self):
+        heading = "System Max-Y — whole server"
+        table = "Metric\tValue\n" + "\n".join(f"Memory bank {i}\t256 GB" for i in range(9))
+        text = "Unrelated marketing paragraph. " * 40 + "\n\n" + heading + "\n\n" + table
+        for budget in (len(table.encode()) + 10, len((heading + "\n\n" + table).encode()) + 4):
+            with self.subTest(budget=budget):
+                result = select_passages(text, "Dame specs", budget)
+                if "256 GB" in result["text"]:
+                    self.assertIn(heading + "\n\n" + table, result["text"])
+                else:
+                    self.assertLess(budget, len((heading + "\n\n" + table).encode()))
+                self.assertLessEqual(len(result["text"].encode()), budget)
+
+    def test_many_short_paragraphs_do_not_repeat_suffix_scans(self):
+        paragraphs = ["Short public paragraph without numeric cells."] * 3000
+        with patch("cogs._research_context.re.search", wraps=re.search) as search:
+            result = select_passages("\n\n".join(paragraphs), "Public specifications", 512)
+        self.assertTrue(result["text"])
+        self.assertLessEqual(len(result["text"].encode()), 512)
+        self.assertLessEqual(search.call_count, 3 * len(paragraphs))
 
     def test_assessment_rejects_invented_quotes_and_requires_two_sources_for_conflicts(self):
         pages = {"https://official.example/releases": {"text": "Release 9 is current.", "retrieved_at_utc": "2030-01-02"}}

@@ -41,7 +41,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
             self.call("read_webpage", "https://news.example/invented-article", 2),
             self.call("search_web", "Example official listing statement", 3), self.call("read_webpage", found, 4)]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)) as provider:
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual(self.engine.web.search_web.await_count, 2)
         self.engine.web.read_webpage.assert_awaited_once_with(found, query=self.job["message"].content, max_text=ANY)
         self.assertIn("url_not_discovered", json.dumps(provider.await_args_list[2].args[2]))
@@ -59,7 +59,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         replies = [self.call("search_web", "Example listing", 1), self.call("read_webpage", "https://news.example/guessed", 2),
             self.call("read_webpage", initial, 3), self.call("read_webpage", linked, 4)]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)):
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual([call.args[0] for call in self.engine.web.read_webpage.await_args_list], [initial, linked])
         self.assertIn(redirected, result["verified_source_urls"])
         self.assertIn(linked, result["verified_source_urls"])
@@ -70,12 +70,14 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(url=url):
                 self.job["message"].content = "Read " + url
                 self.job["fingerprint"] = fingerprint(self.job["message"])
+                self.job["public_web_brief"] = {"topic": "Read", "question": self.job["message"].content}
                 self.job["deep_think"] = False
                 self.engine.web = SimpleNamespace(close=AsyncMock(), search_web=AsyncMock(side_effect=ValueError("unavailable")),
                     read_webpage=AsyncMock(return_value={"url": url, "text": "Public information from the requested source."}))
-                replies = [self.call("search_web", "Example listing", 1), self.call("read_webpage", url, 2), {"content": "done"}]
+                replies = [self.call("search_web", "Example listing", 1), self.call("read_webpage", url, 2),
+                    report([fact("Requested source", url, "Public information from the requested source.")], sufficient=True)]
                 with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)):
-                    result = await self.engine.web_context(self.job)
+                    result = await self.engine.web_context(fixtures.public_research_job(self.job))
                 self.assertEqual(self.engine.web.read_webpage.await_count, 1)
                 self.assertIn(url, result["verified_source_urls"])
 
@@ -95,7 +97,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         replies.extend([report([supported], gaps=["Need to verify the central source again"]),
             self.call("read_webpage", urls[0], 99), report([supported], sufficient=True)])
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)):
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual(self.engine.web.read_webpage.await_count, 14)
         self.assertTrue(result["assessment"]["sufficient"])
 
@@ -113,7 +115,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
                     [self.fixture.tool_call("read_webpage", f"https://official.example/{i}", f"read{i}") for i in range(5)]]
                 replies = [{"choices": [{"finish_reason": "tool_calls", "message": {"tool_calls": calls}}]} for calls in batches]
                 with patch("cogs._llm_moderation.endpoint_json", new=AsyncMock(side_effect=replies)) as provider:
-                    result = await self.engine.web_context(self.job)
+                    result = await self.engine.web_context(fixtures.public_research_job(self.job))
                 self.assertEqual(provider.await_count, 2)
                 self.assertEqual(self.engine.web.search_web.await_count, 2)
                 self.assertEqual(self.engine.web.read_webpage.await_count, source_limit)
@@ -132,7 +134,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
                 calls[-1]["function"]["arguments"] = json.dumps({key: "public", "extra": "private-payload"})
                 with patch("cogs._conversation.request_completion", new=AsyncMock(return_value={"tool_calls": calls})):
                     with self.assertRaisesRegex(ValueError, "invalid_web_arguments"):
-                        await self.engine.web_context(self.job)
+                        await self.engine.web_context(fixtures.public_research_job(self.job))
                 self.engine.web.search_web.assert_not_awaited()
                 self.engine.web.read_webpage.assert_not_awaited()
 
@@ -156,7 +158,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
                     await advance(25)
                     return {"url": target, "text": "Memory: 16 GB."}
                 replies = [self.call("search_web", "Example specifications", 1),
-                           self.call("read_webpage", url, 2), {"content": "done"}]
+                           self.call("read_webpage", url, 2), report([fact("Memory", url, "Memory: 16 GB.")], sufficient=True)]
                 async def provider(*args, **kwargs):
                     async with asyncio.timeout(kwargs["timeout_seconds"]):
                         await advance(20)
@@ -164,26 +166,26 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
                 self.engine.web = SimpleNamespace(search_web=search, read_webpage=read, close=AsyncMock())
                 with patch.object(loop, "time", lambda: clock[0]), patch.object(loop, "slow_callback_duration", 1000), \
                      patch("cogs._conversation.request_completion", new=provider):
-                    result = await self.engine.web_context(self.job)
+                    result = await self.engine.web_context(fixtures.public_research_job(self.job))
                 if seconds == 30:
                     self.assertEqual(result["diagnostics"]["stop_reason"], "timeout")
                     self.assertEqual(result["verified_source_urls"], [])
                 else:
                     self.assertEqual(result["verified_source_urls"], [url])
                     self.assertIn("Memory: 16 GB.", result["page_evidence_untrusted"][0]["text"])
-                    self.assertEqual(result["diagnostics"]["stop_reason"], "planner_stop")
+                    self.assertEqual(result["diagnostics"]["stop_reason"], "report")
 
     async def test_normal_retrieval_has_four_planner_rounds_and_timeout_is_not_sufficiency(self):
         self.job["deep_think"] = False
         self.engine.web = SimpleNamespace(search_web=AsyncMock(return_value={"results": []}), close=AsyncMock())
         replies = [self.call("search_web", f"query {index}", index) for index in range(4)]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)) as provider:
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual(provider.await_count, 4)
         self.assertEqual(self.engine.web.search_web.await_count, 2)
         self.assertFalse(result["complete"])
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=TimeoutError())):
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertFalse(result["complete"])
         self.assertEqual(result["verified_source_urls"], [])
 
@@ -201,19 +203,21 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
                 replies.extend(self.call("read_webpage", url, index + 1) for index, url in enumerate(urls))
                 replies.append({"role": "assistant", "content": "done"})
                 with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)):
-                    result = await self.engine.web_context(self.job)
+                    result = await self.engine.web_context(fixtures.public_research_job(self.job))
                 self.assertEqual(self.engine.web.read_webpage.await_count, cap)
                 self.assertEqual(result["diagnostics"]["read_attempts"], cap)
                 self.assertEqual(result["pages_read"], cap)
 
     async def test_standard_cap_counts_failed_access_but_not_rejected_or_duplicate_urls(self):
+        from cogs._web_access import WebReadError
         self.fixture.db.set_ai_config(10, ai_web_max_sources=2)
         await self.engine.listen(self.fixture.message(202, ping=True))
         self.job = self.fixture.cog._queue.get_nowait()
         first, second = "https://official.example/a", "https://official.example/b"
         self.engine.web = SimpleNamespace(close=AsyncMock(),
             search_web=AsyncMock(return_value={"results": [{"url": first}, {"url": second}]}),
-            read_webpage=AsyncMock(side_effect=[ValueError("read failed"), {"url": second, "text": "Supported public fact."}]))
+            read_webpage=AsyncMock(side_effect=[WebReadError("http_error", "Access denied", http_status=403),
+                                               {"url": second, "text": "Supported public fact."}]))
         replies = [
             {"tool_calls": [self.fixture.tool_call("read_webpage", url, f"read{index}") for index, url in enumerate((
                 "http://localhost/private", "https://cdn.discordapp.com/file"))]},
@@ -222,7 +226,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
                 "https://invented.example/a", first, first + "#fragment", second))]},
             self.call("read_webpage", "https://official.example/c", 20)]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)):
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual([call.args[0] for call in self.engine.web.read_webpage.await_args_list], [first, second])
         self.assertEqual(result["diagnostics"]["read_attempts"], 2)
         self.assertEqual(result["pages_read"], 1)
@@ -239,7 +243,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         replies.insert(3, report([fact("Fact", urls[2], "Supported public fact.")], gaps=["Independent confirmation needed"]))
         replies.append(report([fact("Fact", urls[-1], "Supported public fact.")], sufficient=True))
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)):
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual(self.engine.web.read_webpage.await_count, 5)
         self.assertTrue(result["complete"])
 
@@ -249,9 +253,9 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         self.engine.web = SimpleNamespace(close=AsyncMock(), read_webpage=AsyncMock(side_effect=lambda url, **_: {
             "url": url, "text": "Memory: 16 GB. " + "additional detail " * 500}))
         replies = [{"tool_calls": [self.fixture.tool_call("read_webpage", url, f"read{index}") for index, url in enumerate(urls)]},
-                   {"role": "assistant", "content": "done"}]
+                   *[{"role": "assistant", "content": "done"}] * 3]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)):
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual(result["retrieval_mode"], "quick")
         self.assertTrue(result["page_evidence_untrusted"])
         self.assertIn("Memory: 16 GB.", result["page_evidence_untrusted"][0]["text"])
@@ -270,7 +274,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
                 replies.append(report([fact(f"Source {index}", url, "Release 9 is current.")], gaps=["More comparison needed"]))
         replies.append(report([fact("Current version", "https://official.example/13", "Release 9 is current.")], sufficient=True))
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)):
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual(self.engine.web.search_web.await_count, 22)
         self.assertEqual(self.engine.web.read_webpage.await_count, 14)
         self.assertTrue(result["complete"])
@@ -288,7 +292,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
             report([version, {"claim": "Performance", "status": "unknown", "support": []}], gaps=["Performance unverified"]),
             self.call("read_webpage", second, 1), report([version, performance], sufficient=True)]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)) as provider:
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual(provider.await_count, 4)
         resumed = json.dumps(provider.await_args_list[2].args[2])
         self.assertIn("Performance unverified", resumed)
@@ -303,13 +307,13 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(response=response):
                 provider = AsyncMock(side_effect=response) if isinstance(response, Exception) else AsyncMock(return_value=response)
                 with patch("cogs._conversation.request_completion", new=provider), self.assertRaises((ValueError, TimeoutError)):
-                    await self.engine.web_context(self.job)
+                    await self.engine.web_context(fixtures.public_research_job(self.job))
 
     async def test_model_can_request_essential_clarification_without_claiming_sufficiency(self):
         question = "¿Qué modelo y revisión de la GPU tienes?"
         with patch("cogs._conversation.request_completion", new=AsyncMock(return_value=report(
                 gaps=["Unknown hardware revision"], clarification=question))):
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual(result["clarification_required"], question)
         self.assertFalse(result["assessment"]["sufficient"])
         self.assertTrue(result["complete"])
@@ -319,7 +323,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         replies = [self.call("search_web", "Example", 1), report(gaps=["Version unknown"]),
                    self.call("search_web", "Example", 2), report(gaps=["Version unknown"])]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)):
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertFalse(result["complete"])
         self.assertFalse(result["assessment"]["sufficient"])
         self.assertEqual(result["diagnostics"]["stop_reason"], "research_no_progress")
@@ -331,7 +335,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.Event().wait()
         self.engine.web = SimpleNamespace(search_web=AsyncMock(), close=AsyncMock())
         with patch("cogs._conversation.request_completion", new=pending):
-            task = asyncio.create_task(self.engine.web_context(self.job))
+            task = asyncio.create_task(self.engine.web_context(fixtures.public_research_job(self.job)))
             await asyncio.wait_for(entered.wait(), 1)
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
@@ -345,7 +349,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         replies.append(report(gaps=["Version remains unverified"]))
         replies.append(report(gaps=["Version remains unverified"]))
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)) as provider:
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual([tool["function"]["name"] for tool in provider.await_args_list[4].kwargs["tools"]], ["submit_research"])
         self.assertFalse(result["complete"])
         self.assertEqual(result["diagnostics"]["stop_reason"], "research_no_progress")
@@ -356,7 +360,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         self.engine.web = SimpleNamespace(close=AsyncMock(), read_webpage=AsyncMock(return_value={"url": url, "text": "Release 9 is current."}))
         replies = [self.call("read_webpage", url), report([known], gaps=["Performance unknown"]), TimeoutError()]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)):
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertFalse(result["complete"])
         self.assertEqual(result["assessment"]["facts"][0]["status"], "supported")
         saved = self.engine.research.load(self.engine.research_key(self.job), self.engine.research_token(self.job))
@@ -369,7 +373,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         replies = [self.call("read_webpage", url), EndpointIncompleteResponse("length"),
                    report([fact("Current version", url, "Release 9 is current.")], sufficient=True)]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)) as provider:
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertTrue(result["complete"])
         recovery = provider.await_args_list[-1]
         self.assertEqual(recovery.kwargs["reasoning_effort"], "none")
@@ -390,7 +394,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
                     "url": url, "text": "Release 9 is current.", "retrieved_at_utc": "2030-01-02"}))
                 with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=[
                         self.call("read_webpage", url), EndpointIncompleteResponse(reason), EndpointIncompleteResponse(reason)])) as provider:
-                    result = await self.engine.web_context(self.job)
+                    result = await self.engine.web_context(fixtures.public_research_job(self.job))
                 self.assertEqual(provider.await_count, 3)
                 self.assertEqual(result["diagnostics"]["stop_reason"], "endpoint_output_limit")
                 self.assertFalse(result["complete"])
@@ -407,7 +411,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
             {"url": url, "snippet": "Unverified release 99"}]}))
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=[
                 self.call("search_web", "Example version"), EndpointIncompleteResponse("length"), EndpointIncompleteResponse("length")])) as provider:
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual(provider.await_count, 3)
         self.assertEqual(result["diagnostics"]["stop_reason"], "endpoint_output_limit")
         self.assertEqual(result["verified_source_urls"], [])
@@ -422,8 +426,8 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         self.engine.web = SimpleNamespace(close=AsyncMock(), read_webpage=AsyncMock(return_value={
             "url": url, "text": "Release 9 is current."}))
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=[EndpointIncompleteResponse("length"),
-                self.call("read_webpage", url), {"content": "done"}])) as provider:
-            result = await self.engine.web_context(self.job)
+                self.call("read_webpage", url), report([fact("Version", url, "Release 9 is current.")], sufficient=True)])) as provider:
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual(provider.await_count, 3)
         for call in provider.await_args_list:
             self.assertEqual(call.kwargs["max_output_tokens"], 16384)
@@ -443,7 +447,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
                 provider = AsyncMock(side_effect=response) if isinstance(response, Exception) else AsyncMock(return_value=response)
                 with patch("cogs._conversation.request_completion", new=provider):
                     with self.assertRaises(ValueError):
-                        await self.engine.web_context(self.job)
+                        await self.engine.web_context(fixtures.public_research_job(self.job))
                 self.assertEqual(provider.await_count, 1)
 
     async def test_quick_16k_planner_uses_remaining_total_deadline_for_each_dispatch(self):
@@ -458,7 +462,8 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         async def read(target, **kwargs):
             await advance(20)
             return {"url": target, "text": "Release 9 is current."}
-        replies = [self.call("read_webpage", url), EndpointIncompleteResponse("length"), {"content": "done"}]
+        replies = [self.call("read_webpage", url), EndpointIncompleteResponse("length"),
+            report([fact("Version", url, "Release 9 is current.")], sufficient=True)]
         durations, timeouts = iter((35, 10, 10)), []
         async def provider(*args, **kwargs):
             timeouts.append(kwargs["timeout_seconds"])
@@ -471,13 +476,16 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         self.engine.web = SimpleNamespace(close=AsyncMock(), read_webpage=read)
         with patch.object(loop, "time", lambda: clock[0]), patch.object(loop, "slow_callback_duration", 1000), \
                 patch("cogs._conversation.request_completion", new=provider):
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertEqual(timeouts, [120, 65, 55])
         self.assertEqual(result["verified_source_urls"], [url])
-        self.assertEqual(result["diagnostics"]["stop_reason"], "planner_stop")
+        self.assertEqual(result["diagnostics"]["stop_reason"], "report")
 
     async def test_quick_exhausted_output_reaches_answer_with_read_material_instead_of_generic_error(self):
         from cogs._llm_moderation import EndpointIncompleteResponse
+        from cogs._llm_moderation import fingerprint
+        self.job["message"].content = "Current Example version?"
+        self.job["fingerprint"] = fingerprint(self.job["message"])
         self.job["deep_think"] = False
         url = "https://official.example/version"
         intent = {"tool_calls": [{"id": "intent", "type": "function", "function": {
@@ -503,7 +511,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         replies = [self.call("read_webpage", url, i) for i, url in enumerate(urls)]
         replies.append(report([fact("Current version", urls[0], "Release 9 is current.")], sufficient=True))
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)) as provider:
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertTrue(result["complete"])
         self.assertEqual(provider.await_count, 4)
         self.assertEqual([tool["function"]["name"] for tool in provider.await_args.kwargs["tools"]], ["submit_research"])
@@ -531,7 +539,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
                     replies.append(self.call("read_webpage", url, 1))
                 replies.append(report([known], gaps=["Same missing point, phrased as gap B"]))
                 with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)) as provider:
-                    result = await self.engine.web_context(self.job)
+                    result = await self.engine.web_context(fixtures.public_research_job(self.job))
                 self.assertFalse(result["complete"])
                 self.assertEqual(result["diagnostics"]["stop_reason"], "research_no_progress")
                 self.assertEqual(provider.await_count, 4 if reread else 3)
@@ -543,7 +551,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         self.engine.web = SimpleNamespace(close=AsyncMock(), read_webpage=AsyncMock(return_value={"url": url, "text": "Release 9 is current."}))
         replies = [self.call("read_webpage", url), report([known], gaps=["Performance unknown"]), report(gaps=["Different wording"])]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)):
-            result = await self.engine.web_context(self.job)
+            result = await self.engine.web_context(fixtures.public_research_job(self.job))
         self.assertFalse(result["complete"])
         self.assertEqual(result["assessment"]["facts"][0]["claim"], "Current version")
         saved = self.engine.research.load(self.engine.research_key(self.job), self.engine.research_token(self.job))

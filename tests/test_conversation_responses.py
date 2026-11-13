@@ -70,7 +70,8 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
             close=AsyncMock())
         await self.engine.listen(message)
         replies = [
-            response(reasoning("PRIVATE_INTENT_CIPHER"), function_item("request_public_web_research", {}, "private_call", "private_item")),
+            response(reasoning("PRIVATE_INTENT_CIPHER"), function_item("request_public_web_research", {"public_brief": {
+                "topic": "Example", "question": message.content}}, "private_call", "private_item")),
             response(reasoning("PUBLIC_CIPHER_ONE", "reasoning_one"), function_item("search_web", {"query": "Example latest official version"}, "search_call", "function_item_search")),
             response(reasoning("PUBLIC_CIPHER_TWO", "reasoning_two"), function_item("read_webpage", {"url": "https://official.example/releases"}, "read_call", "function_item_read")),
             response(reasoning("PUBLIC_FINISH_CIPHER"), function_item("submit_research", {
@@ -127,13 +128,14 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
                         "verified_source_urls": [url] if pages_read else [], "search_result_urls": [],
                         "complete": False, "limits_reached": True, "pages_read": pages_read,
                         "assessment": {"sufficient": False, "facts": facts, "gaps": ["Precio local sin confirmar"]}}
+                    brief_args = {"public_brief": {"topic": "Example GPU", "question": message.content}}
                     if protocol == "responses":
-                        replies = [response(function_item("request_public_web_research", {}, "intent", "intent_item")),
+                        replies = [response(function_item("request_public_web_research", brief_args, "intent", "intent_item")),
                                    response(text_item(answer))]
                     else:
                         replies = [{"choices": [{"finish_reason": "tool_calls", "message": {"content": None,
                             "tool_calls": [{"id": "intent", "type": "function", "function": {
-                                "name": "request_public_web_research", "arguments": "{}"}}]}}]},
+                                "name": "request_public_web_research", "arguments": json.dumps(brief_args)}}]}}]},
                             {"choices": [{"finish_reason": "stop", "message": {"content": answer}}]}]
                     with patch.object(self.engine, "web_context", new=AsyncMock(return_value=web)), patch(
                             "cogs._llm_moderation.endpoint_json", new=AsyncMock(side_effect=replies)) as provider:
@@ -149,7 +151,7 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_web_intent_has_one_stateless_canonical_repair_and_valid_intent_needs_none(self):
         self.db.set_ai_config(10, ai_web_enabled=1)
-        brief = {"topic": "Example listing", "question": "Is Example publicly listed?"}
+        brief = {"topic": "Example", "question": "Is Example publicly listed?"}
         web = {"sources": [], "verified_source_urls": [], "complete": True, "assessment": {"sufficient": True}}
         for protocol_index, protocol in enumerate(("chat_completions", "responses")):
             self.db.set_automod_config(10, rules={"llm": {"endpoint_url": "https://provider.example/v1",
@@ -267,7 +269,7 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
                         checkpoint, {"tool_calls": [self.fixture.tool_call("read_webpage", second, "read2")]}, finished)]
                 with patch.object(self.engine.budget, "window", new=AsyncMock(return_value=32768)), patch(
                         "cogs._llm_moderation.endpoint_json", new=AsyncMock(side_effect=replies)) as provider:
-                    result = await self.engine.web_context(job)
+                    result = await self.engine.web_context(conversation_fixtures.public_research_job(job))
                 self.assertEqual(provider.await_count, 4)
                 payloads = [call.args[2] for call in provider.await_args_list]
                 self.assertEqual([tool["name"] if protocol == "responses" else tool["function"]["name"]

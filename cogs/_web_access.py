@@ -52,21 +52,35 @@ class WebReadError(ValueError):
 
 
 _EXTRACT_DOCUMENT = """() => {
-    const main = document.querySelector('main,article,[role="main"]') || document.body;
-    const copy = main?.cloneNode(true);
-    for (const el of copy?.querySelectorAll('script,style,noscript,nav,footer') || []) el.remove();
-    for (const el of copy?.querySelectorAll('td,th') || []) el.append('\\t');
-    for (const el of copy?.querySelectorAll('p,div,section,article,main,li,h1,h2,h3,h4,tr,table') || []) el.append('\\n');
-    for (const el of copy?.querySelectorAll('br') || []) el.replaceWith(document.createTextNode('\\n'));
-    const raw = copy?.textContent || '';
+    const comments = '[itemprop~="comment"],[itemtype$="/Comment"]';
+    const extract = node => {
+        const copy = node?.cloneNode(true);
+        for (const el of copy?.querySelectorAll('script,style,noscript,nav,footer,' + comments) || []) el.remove();
+        for (const el of copy?.querySelectorAll('td,th') || []) el.append('\\t');
+        for (const el of copy?.querySelectorAll('p,div,section,article,main,li,h1,h2,h3,h4,tr,table') || []) el.append('\\n');
+        for (const el of copy?.querySelectorAll('br') || []) el.replaceWith(document.createTextNode('\\n'));
+        return copy?.textContent || '';
+    };
+    const size = text => text.replace(/\\s+/g, ' ').trim().length;
+    let raw = '', best = 0;
+    for (const node of document.querySelectorAll('main,article,[role="main"]')) {
+        if (node.closest('nav,footer,' + comments)) continue;
+        const text = extract(node), length = size(text);
+        if (length > best) { raw = text; best = length; }
+    }
+    if (best < 200) {
+        const body = extract(document.body);
+        if (size(body) > best) raw = body;
+    }
     return {title: document.title.slice(0,300), text: raw.slice(0,500000),
         document_url: document.URL,
         document_ready: document.readyState !== 'loading', extraction_truncated: raw.length > 500000,
         published_at_untrusted: document.querySelector('meta[property="article:published_time"],meta[name="date"],meta[itemprop="datePublished"]')?.content?.slice(0,100) || null,
         modified_at_untrusted: document.querySelector('meta[property="article:modified_time"],meta[name="last-modified"],meta[itemprop="dateModified"]')?.content?.slice(0,100) || null,
         dates_untrusted: Array.from(document.querySelectorAll('time[datetime]')).slice(0,5).map(el=>el.dateTime.slice(0,100)),
-        links: Array.from(document.querySelectorAll('a[href]')).slice(0,50)
-            .map(a=>({title:(a.innerText || '').slice(0,150),url:a.href}))};
+        links: Array.from(document.querySelectorAll('a[href]')).slice(0,200)
+            .map(a=>({title:(a.innerText?.trim() || a.getAttribute('aria-label') || a.title || a.textContent?.trim() || a.querySelector('img')?.alt || '').slice(0,150),
+                url:a.href, navigation:!!a.closest('nav,header,footer,[role="navigation"]')}))};
 }"""
 
 
@@ -367,12 +381,13 @@ class WebAccess:
             if cached and time.monotonic() - cached[0] < 300:
                 self._cache.move_to_end(query)
                 return {**cached[1], "results": [dict(row) for row in cached[1]["results"]]}
-            results, outcome = [], "empty"
+            results, outcome, backend_degraded = [], "empty", False
             try:
                 async with asyncio.timeout(SEARCH_TIMEOUT):
                     payload = await self._search(query)
                     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
                         raise ValueError("Respuesta de búsqueda no válida.")
+                    backend_degraded = bool(payload.get("unresponsive_engines"))
                     seen = set()
                     for row in payload["results"][:50]:
                         if not isinstance(row, dict):
@@ -394,11 +409,15 @@ class WebAccess:
                 outcome = "timeout"
             except Exception as exc:
                 outcome = type(exc).__name__
-            logger.debug("Public search backend=searxng outcome=%s results=%d", outcome, len(results))
-            if not results:
-                raise ValueError("El buscador público SearXNG no está disponible o no devolvió resultados públicos válidos.") from None
+            backend_degraded |= outcome not in {"ok", "empty"}
+            logger.debug("Public search backend=searxng outcome=%s results=%d degraded=%s", outcome, len(results), backend_degraded)
+            if not results and outcome != "empty":
+                raise ValueError("El buscador público SearXNG no está disponible.") from None
             result = {"results": results, "source_kind": "search_snippets", "query": query,
+                      "status": "ok" if results else "no_results", "backend_degraded": backend_degraded,
                       "retrieved_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+            if not results:
+                return result
             self._cache[query] = (time.monotonic(), result)
             self._cache.move_to_end(query)
             while len(self._cache) > 32:
@@ -478,15 +497,21 @@ class WebAccess:
                     final_url = await _verified_url(extracted["document_url"])
                     if proxy.exhausted:
                         raise ValueError("La página supera el presupuesto de lectura.")
-                    links = []
+                    candidates = {}
                     for link in extracted["links"]:
-                        if len(links) >= 10:
-                            break
                         try:
-                            target = await _verified_url(link["url"])
+                            # Discovery is not a fetch. DNS and the public proxy revalidate on navigation.
+                            target = _url(link["url"])[0]
                         except ValueError:
                             continue
-                        links.append({"title": link["title"], "url": target})
+                        if target == final_url:
+                            continue
+                        rank = (0 if re.search(r"\b(?:docs?|documentation|manual|reference|specifications|specs|wiki)\b",
+                            link["title"] + " " + urlsplit(target).path + " " + (urlsplit(target).hostname or ""), re.I)
+                            else 2 if link.get("navigation") else 1)
+                        if target not in candidates or rank < candidates[target][0]:
+                            candidates[target] = (rank, {"title": link["title"], "url": target})
+                    links = [link for _, link in sorted(candidates.values(), key=lambda item: item[0])[:10]]
                     passages = select_passages(extracted["text"], query, min(MAX_TEXT, max(0, max_text)))
                     return {"status": "success", "title": extracted["title"], "url": final_url, **passages, "links": links,
                             "http_status": http_status, "attempts": attempts, "render_state": extracted["render_state"],

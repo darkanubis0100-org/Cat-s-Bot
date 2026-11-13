@@ -9,6 +9,10 @@ search:
     - html
     - json
 
+engines:
+  - name: yahoo
+    disabled: false
+
 server:
   limiter: false
   public_instance: false

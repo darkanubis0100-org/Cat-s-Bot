@@ -151,10 +151,12 @@ async def _endpoint_response(session, url, headers, payload, auxiliary, timeout_
 
 
 async def request_completion(session, cfg, messages, *, moderation=False, tools=None, structured=False,
-                             reasoning_effort=None, max_output_tokens=None, timeout_seconds=None):
+                             reasoning_effort=None, max_output_tokens=None, timeout_seconds=None, tool_choice="auto"):
     """Shared bounded transport; conversation and moderation keep separate contracts."""
     if moderation and (tools or structured):
         raise ValueError("moderation_tool_contract_forbidden")
+    if tool_choice not in {"auto", "required"} or tool_choice == "required" and (moderation or not tools):
+        raise ValueError("invalid_tool_choice")
     effort = "none" if moderation else (reasoning_effort if reasoning_effort is not None else cfg.get("chat_reasoning_effort", "none"))
     if not isinstance(effort, str) or effort not in REASONING_EFFORTS:
         raise ValueError("endpoint_invalid_reasoning_effort")
@@ -177,7 +179,8 @@ async def request_completion(session, cfg, messages, *, moderation=False, tools=
             payload["response_format"] = {"type": "json_object"}
         elif tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+    if tools and not moderation:
+        payload["tool_choice"] = tool_choice
     transport_options = {"timeout_seconds": timeout_seconds} if timeout_seconds is not None and not moderation else {}
     result = await endpoint_json(session, cfg, payload, **transport_options)
     if is_responses:
