@@ -129,8 +129,9 @@ class DeepThinkCommandTests(unittest.IsolatedAsyncioTestCase):
             "verified_source_urls": [], "complete": True, "pages_read": 1}
         intent = {"tool_calls": [{"id": "intent", "type": "function", "function": {
             "name": "request_public_web_research", "arguments": "{}"}}]}
+        resolved = fixtures.web_selection("Example", job["message"].content)
         with patch.object(self.engine, "web_context", new=AsyncMock(return_value=web)), patch(
-                "cogs._conversation.request_completion", new=AsyncMock(side_effect=[intent, "Explicación."])), patch.object(
+                "cogs._conversation.request_completion", new=AsyncMock(side_effect=[intent, resolved, "Explicación."])), patch.object(
                 self.db, "refund_ai_deep_think", wraps=self.db.refund_ai_deep_think) as refund:
             await self.engine.process(job)
         refund.assert_not_called()
@@ -217,7 +218,8 @@ class DeepThinkCommandTests(unittest.IsolatedAsyncioTestCase):
         self.engine.web = SimpleNamespace(close=AsyncMock(), read_webpage=AsyncMock(return_value={"url": url, "text": "Release 9 is current."}))
         intent = {"tool_calls": [{"id": "intent", "type": "function", "function": {
             "name": "request_public_web_research", "arguments": "{}"}}]}
-        replies = [intent, {"tool_calls": [self.fixture.tool_call("read_webpage", url)]},
+        resolved = fixtures.web_selection("Example", job["message"].content)
+        replies = [intent, resolved, {"tool_calls": [self.fixture.tool_call("read_webpage", url)]},
                    research_report([research_fact(url, "Release 9 is current.")], gaps=["Performance remains unknown"]),
                    TimeoutError(), EndpointIncompleteResponse("length"), "La versión documentada es 9; la mejora de rendimiento no está verificada."]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=replies)) as provider:

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import discord
 from cogs._conversation import FINAL_WEB_GROUNDING
 
-from tests import test_conversation_memory as conversation_fixtures
+from tests import test_conversation_memory as fixtures
 
 
 def text_item(text, item_id="message"):
@@ -30,7 +30,7 @@ def response(*items):
 
 class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.fixture = conversation_fixtures.ConversationRuntimeTest()
+        self.fixture = fixtures.ConversationRuntimeTest()
         await self.fixture.asyncSetUp()
         self.db, self.engine = self.fixture.db, self.fixture.engine
         self.db.set_automod_config(10, rules={"llm": {"endpoint_url": "https://provider.example/v1/responses",
@@ -72,6 +72,8 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
         replies = [
             response(reasoning("PRIVATE_INTENT_CIPHER"), function_item("request_public_web_research", {"public_brief": {
                 "topic": "Example", "question": message.content}}, "private_call", "private_item")),
+            response(reasoning("PRIVATE_SUBJECT_CIPHER"), function_item("select_public_web_research",
+                fixtures.selection_arguments("Example", message.content), "subject_call", "subject_item")),
             response(reasoning("PUBLIC_CIPHER_ONE", "reasoning_one"), function_item("search_web", {"query": "Example latest official version"}, "search_call", "function_item_search")),
             response(reasoning("PUBLIC_CIPHER_TWO", "reasoning_two"), function_item("read_webpage", {"url": "https://official.example/releases"}, "read_call", "function_item_read")),
             response(reasoning("PUBLIC_FINISH_CIPHER"), function_item("submit_research", {
@@ -81,21 +83,21 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
             response(reasoning("PRIVATE_FINAL_CIPHER"), text_item("Según la fuente oficial, la versión consultada es 9."))]
         with patch("cogs._llm_moderation.endpoint_json", new=AsyncMock(side_effect=replies)) as provider:
             await self.engine.process(self.fixture.cog._queue.get_nowait())
-        self.assertEqual(provider.await_count, 5)
+        self.assertEqual(provider.await_count, 6)
         payloads = [call.args[2] for call in provider.await_args_list]
         for payload in payloads:
             self.assertFalse(payload["store"])
             self.assertNotIn("previous_response_id", payload)
-        for payload in payloads[1:4]:
+        for payload in payloads[2:5]:
             self.assertNotIn("PRIVATE_", json.dumps(payload))
-        replay = payloads[2]["input"]
+        replay = payloads[3]["input"]
         self.assertIn(reasoning("PUBLIC_CIPHER_ONE", "reasoning_one"), replay)
         native_call = next(item for item in replay if item.get("type") == "function_call")
         self.assertEqual((native_call["id"], native_call["call_id"]), ("function_item_search", "search_call"))
         output = next(item for item in replay if item.get("type") == "function_call_output")
         self.assertEqual(output["call_id"], "search_call")
         self.assertIn("official.example", output["output"])
-        replay_two = payloads[3]["input"]
+        replay_two = payloads[4]["input"]
         self.assertIn(reasoning("PUBLIC_CIPHER_TWO", "reasoning_two"), replay_two)
         self.assertEqual({item["call_id"] for item in replay_two if item.get("type") == "function_call_output"}, {"search_call", "read_call"})
         final = json.dumps(payloads[-1])
@@ -137,19 +139,27 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
                             "tool_calls": [{"id": "intent", "type": "function", "function": {
                                 "name": "request_public_web_research", "arguments": json.dumps(brief_args)}}]}}]},
                             {"choices": [{"finish_reason": "stop", "message": {"content": answer}}]}]
+                    selected = fixtures.web_selection(**brief_args["public_brief"])
+                    replies.insert(1, response(function_item("select_public_web_research", fixtures.selection_arguments(**brief_args["public_brief"]), "selection", "selection_item"))
+                        if protocol == "responses" else {"choices": [{"finish_reason": "tool_calls", "message": selected}]})
                     with patch.object(self.engine, "web_context", new=AsyncMock(return_value=web)), patch(
                             "cogs._llm_moderation.endpoint_json", new=AsyncMock(side_effect=replies)) as provider:
                         await self.engine.process(self.fixture.cog._queue.get_nowait())
-                    self.assertEqual(provider.await_count, 2)
+                    self.assertEqual(provider.await_count, 3)
                     message.reply.assert_awaited_once()
                     self.assertEqual(message.reply.await_args.args[0], answer)
-                    final = json.dumps(provider.await_args.args[2])
-                    self.assertIn('"limits_reached": true', final.replace('\\"', '"'))
-                    self.assertIn('"status": "unknown"', final.replace('\\"', '"'))
-                    if pages_read:
-                        self.assertIn('"status": "supported"', final.replace('\\"', '"'))
+                    payload = provider.await_args.args[2]
+                    messages = payload["input" if protocol == "responses" else "messages"]
+                    content = next(item["content"] for item in messages if item.get("role") == "user")
+                    if isinstance(content, list):
+                        content = next(item["text"] for item in content if "text" in item)
+                    final_web = json.loads(content)["web_research_untrusted"]
+                    self.assertTrue(final_web["limits_reached"])
+                    self.assertEqual(final_web["assessment"]["facts"],
+                        [{"support": [{"url": url, "quote": "Memory: 16 GB."}]}] if pages_read else [])
+                    self.assertNotIn("gaps", final_web["assessment"])
 
-    async def test_invalid_web_intent_has_one_stateless_canonical_repair_and_valid_intent_needs_none(self):
+    async def test_all_web_intents_have_one_stateless_subject_resolution(self):
         self.db.set_ai_config(10, ai_web_enabled=1)
         brief = {"topic": "Example", "question": "Is Example publicly listed?"}
         web = {"sources": [], "verified_source_urls": [], "complete": True, "assessment": {"sufficient": True}}
@@ -163,32 +173,31 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
                     message.content = brief["question"]
                     await self.engine.listen(message)
                     args = {"query": "Example listing"} if invalid else (brief if form == "flat" else {"public_brief": brief})
-                    repaired = brief if form == "repair_flat" else {"public_brief": brief}
+                    repaired = fixtures.selection_arguments(**brief)
                     if protocol == "responses":
                         replies = [response(reasoning("INITIAL_OPAQUE_SIDECAR"), function_item("request_public_web_research", args, "first", "first_item"))]
-                        if invalid:
-                            replies.append(response(function_item("request_public_web_research", repaired, "repair", "repair_item")))
+                        replies.append(response(function_item("select_public_web_research", repaired, "repair", "repair_item")))
                         replies.append(response(text_item("Example remains privately held.")))
                     else:
-                        arguments = [args, repaired] if invalid else [args]
+                        arguments = [args, repaired]
                         replies = [{"choices": [{"finish_reason": "tool_calls", "message": {"content": None,
                             "tool_calls": [{"id": f"call{index}", "type": "function", "function": {
-                                "name": "request_public_web_research", "arguments": json.dumps(value)}}]}}]}
+                                "name": "request_public_web_research" if index == 0 else "select_public_web_research", "arguments": json.dumps(value)}}]}}]}
                             for index, value in enumerate(arguments)]
                         replies.append({"choices": [{"finish_reason": "stop", "message": {"content": "Example remains privately held."}}]})
                     with patch.object(self.engine, "web_context", new=AsyncMock(return_value=web)) as research, patch(
                             "cogs._llm_moderation.endpoint_json", new=AsyncMock(side_effect=replies)) as provider:
                         await self.engine.process(self.fixture.cog._queue.get_nowait())
-                    self.assertEqual(provider.await_count, 3 if invalid else 2)
+                    self.assertEqual(provider.await_count, 3)
                     research.assert_awaited_once()
                     self.assertEqual(research.await_args.args[0]["public_web_brief"], brief)
                     self.assertEqual(message.reply.await_args.args[0], "Example remains privately held.")
-                    if invalid:
-                        payload = provider.await_args_list[1].args[2]
-                        names = [tool["name"] if protocol == "responses" else tool["function"]["name"] for tool in payload["tools"]]
-                        self.assertEqual(names, ["request_public_web_research"])
-                        self.assertEqual(payload["max_output_tokens" if protocol == "responses" else "max_tokens"], 512)
-                        self.assertNotIn("INITIAL_OPAQUE_SIDECAR", json.dumps(payload))
+                    payload = provider.await_args_list[1].args[2]
+                    names = [tool["name"] if protocol == "responses" else tool["function"]["name"] for tool in payload["tools"]]
+                    self.assertEqual(names, ["select_public_web_research", "request_public_web_clarification"])
+                    self.assertEqual(payload["max_output_tokens" if protocol == "responses" else "max_tokens"], 16384)
+                    self.assertEqual(payload["tool_choice"], "required")
+                    self.assertNotIn("INITIAL_OPAQUE_SIDECAR", json.dumps(payload))
 
     async def test_final_grounding_is_after_web_data_and_included_in_budget_for_both_protocols(self):
         self.db.set_ai_config(10, ai_web_enabled=1)
@@ -207,6 +216,8 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
                     replies = [{"choices": [{"finish_reason": "tool_calls", "message": {"tool_calls": [{"id": "intent", "type": "function",
                         "function": {"name": "request_public_web_research", "arguments": json.dumps({"public_brief": brief})}}]}}]},
                         {"choices": [{"finish_reason": "stop", "message": {"content": "Public answer."}}]}]
+                replies.insert(1, response(function_item("select_public_web_research", fixtures.selection_arguments(**brief), "selection", "selection_item"))
+                    if protocol == "responses" else {"choices": [{"finish_reason": "tool_calls", "message": fixtures.web_selection(**brief)}]})
                 with patch.object(self.engine, "web_context", new=AsyncMock(return_value=web)), patch.object(
                         self.engine.budget, "fit", new=AsyncMock(wraps=self.engine.budget.fit)) as fit, patch(
                         "cogs._llm_moderation.endpoint_json", new=AsyncMock(side_effect=replies)) as provider:
@@ -243,8 +254,8 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_full_context_checkpoints_and_continues_with_both_protocols(self):
         first, second = "https://official.example/releases", "https://official.example/performance"
-        version = conversation_fixtures.research_fact(first, "Release 9 is current.")
-        performance = conversation_fixtures.research_fact(second, "Performance improved 20 percent.")
+        version = fixtures.research_fact(first, "Release 9 is current.")
+        performance = fixtures.research_fact(second, "Performance improved 20 percent.")
         opaque = "OVERSIZED_PUBLIC_CIPHER" + "x" * 12000
         for index, protocol in enumerate(("chat_completions", "responses")):
             with self.subTest(protocol=protocol):
@@ -256,8 +267,8 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
                 self.engine.web = SimpleNamespace(read_webpage=AsyncMock(side_effect=[
                     {"url": first, "text": "Release 9 is current.", "retrieved_at_utc": "2030-01-02"},
                     {"url": second, "text": "Performance improved 20 percent."}]), close=AsyncMock())
-                checkpoint = conversation_fixtures.research_report([version], gaps=["Performance unverified"])
-                finished = conversation_fixtures.research_report([version, performance], sufficient=True)
+                checkpoint = fixtures.research_report([version], gaps=["Performance unverified"])
+                finished = fixtures.research_report([version, performance], sufficient=True)
                 if protocol == "responses":
                     replies = [response(reasoning(opaque), function_item("read_webpage", {"url": first}, "read1", "item1")),
                         response(function_item("submit_research", json.loads(checkpoint["tool_calls"][0]["function"]["arguments"]), "report1", "report_item1")),
@@ -269,7 +280,7 @@ class ResponsesConversationTest(unittest.IsolatedAsyncioTestCase):
                         checkpoint, {"tool_calls": [self.fixture.tool_call("read_webpage", second, "read2")]}, finished)]
                 with patch.object(self.engine.budget, "window", new=AsyncMock(return_value=32768)), patch(
                         "cogs._llm_moderation.endpoint_json", new=AsyncMock(side_effect=replies)) as provider:
-                    result = await self.engine.web_context(conversation_fixtures.public_research_job(job))
+                    result = await self.engine.web_context(fixtures.public_research_job(job))
                 self.assertEqual(provider.await_count, 4)
                 payloads = [call.args[2] for call in provider.await_args_list]
                 self.assertEqual([tool["name"] if protocol == "responses" else tool["function"]["name"]

@@ -484,6 +484,7 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
     async def test_quick_exhausted_output_reaches_answer_with_read_material_instead_of_generic_error(self):
         from cogs._llm_moderation import EndpointIncompleteResponse
         from cogs._llm_moderation import fingerprint
+        from tests.test_conversation_memory import web_selection
         self.job["message"].content = "Current Example version?"
         self.job["fingerprint"] = fingerprint(self.job["message"])
         self.job["deep_think"] = False
@@ -494,11 +495,11 @@ class ModelResearchTests(unittest.IsolatedAsyncioTestCase):
         self.engine.web = SimpleNamespace(close=AsyncMock(), read_webpage=AsyncMock(return_value={
             "url": url, "text": "Release 9 is current."}))
         answer = "La documentación consultada indica la versión 9."
-        with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=[intent,
+        with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=[intent, web_selection("Example", self.job["message"].content),
                 self.call("read_webpage", url), EndpointIncompleteResponse("length"),
                 EndpointIncompleteResponse("length"), answer])) as provider:
             await self.engine.process(self.job)
-        self.assertEqual(provider.await_count, 5)
+        self.assertEqual(provider.await_count, 6)
         final_context = json.loads(provider.await_args.args[2][1]["content"])["web_research_untrusted"]
         self.assertEqual(final_context["diagnostics"]["stop_reason"], "endpoint_output_limit")
         self.assertIn("Release 9 is current.", final_context["page_evidence_untrusted"][0]["text"])

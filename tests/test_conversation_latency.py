@@ -328,6 +328,55 @@ class ConversationLatencyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.reply.await_args.args[0], "La respuesta ya está preparada.")
         self.assertEqual(f.db.get_ai_chat_turns(10, 20)[-1]["content"], "Respuesta")
 
+    async def test_503_authorization_retries_once_and_only_proceeds_after_recovery(self):
+        f = self.fixture
+        for index, persistent in enumerate((False, True)):
+            with self.subTest(persistent=persistent):
+                message = f.message(300 + index, ping=True)
+                await self.engine.listen(message)
+                reads = 0
+                async def fetch(message_id):
+                    nonlocal reads
+                    reads += 1
+                    if persistent or reads == 1:
+                        raise discord.DiscordServerError(SimpleNamespace(status=503, reason="Unavailable", headers={}), "temporary")
+                    return f.messages[message_id]
+                discord.TextChannel.fetch_message.side_effect = fetch
+                with patch("cogs._conversation.asyncio.sleep", new=AsyncMock()) as wait, patch(
+                        "cogs._conversation.request_completion", new=AsyncMock(return_value={"content": "Authorized answer"})) as provider:
+                    await self.engine.process(f.cog._queue.get_nowait())
+                wait.assert_awaited_once_with(1.0)
+                if persistent:
+                    self.assertEqual(reads, 2)
+                    provider.assert_not_awaited()
+                    message.reply.assert_not_awaited()
+                else:
+                    provider.assert_awaited_once()
+                    self.assertEqual(message.reply.await_args.args[0], "Authorized answer")
+
+    async def test_503_wait_rechecks_revoked_permissions_before_sending_generated_answer(self):
+        f = self.fixture
+        message = f.message(ping=True)
+        await self.engine.listen(message)
+        reads = 0
+        async def fetch(message_id):
+            nonlocal reads
+            reads += 1
+            if reads == 3:
+                raise discord.DiscordServerError(SimpleNamespace(status=503, reason="Unavailable", headers={}), "temporary")
+            return f.messages[message_id]
+        async def revoke_during_wait(_seconds):
+            f.role._permissions = 0
+        discord.TextChannel.fetch_message.side_effect = fetch
+        before = len(f.db.get_ai_chat_turns(10, 20))
+        with patch("cogs._conversation.asyncio.sleep", new=AsyncMock(side_effect=revoke_during_wait)) as wait, patch(
+                "cogs._conversation.request_completion", new=AsyncMock(return_value={"content": "Must be withheld"})) as provider:
+            await self.engine.process(f.cog._queue.get_nowait())
+        wait.assert_awaited_once_with(1.0)
+        provider.assert_awaited_once()
+        message.reply.assert_not_awaited()
+        self.assertEqual(len(f.db.get_ai_chat_turns(10, 20)), before)
+
     async def test_429_wait_does_not_authorize_edited_deleted_or_revoked_source(self):
         f = self.fixture
         for change in ("edit", "delete", "revoke"):

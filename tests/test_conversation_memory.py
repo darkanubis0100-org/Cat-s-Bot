@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 import tempfile
 import threading
@@ -29,6 +30,23 @@ def research_report(facts=(), *, sufficient=False, gaps=(), clarification=""):
 
 def research_fact(url, quote):
     return {"claim": quote, "status": "supported", "support": [{"url": url, "quote": quote}]}
+
+
+def selection_arguments(topic, question, *, current=None, topic_text=None, source="t"):
+    """Build numeric responses for fixed test strings, independently of the resolver."""
+    current = question if current is None else current
+    def span(text, fragment):
+        tokens = list(re.finditer(r"\w+|[^\w\s]", text))
+        start = text.index(fragment)
+        return {"first": next(i for i, token in enumerate(tokens) if token.start() == start),
+                "last": next(i for i, token in enumerate(tokens) if token.end() == start + len(fragment))}
+    return {"topic": {"source": source, **span(current if topic_text is None else topic_text, topic)},
+            "question": span(current, question)}
+
+
+def web_selection(topic, question, **kwargs):
+    return {"tool_calls": [{"id": "select", "type": "function", "function": {
+        "name": "select_public_web_research", "arguments": json.dumps(selection_arguments(topic, question, **kwargs))}}]}
 
 
 def public_research_job(job):
@@ -604,6 +622,7 @@ class ConversationRuntimeTest(unittest.IsolatedAsyncioTestCase):
             "public_brief": {"topic": "Lisboa", "question": "Busca el tiempo en Lisboa"}})}}
         responses = [{"role": "assistant", "content": "PRIVATE_ASSISTANT_REASON", "tool_calls": [intent,
                         {"id": "history", "type": "function", "function": {"name": "read_my_moderation_history", "arguments": "{}"}}]},
+                     web_selection("Lisboa", "Busca el tiempo en Lisboa", current=message.content),
                      self.history_confirmation(),
                      {"role": "assistant", "content": None, "tool_calls": [self.tool_call()]},
                      {"role": "assistant", "tool_calls": [self.tool_call("read_webpage", "https://weather.example/lisbon", "weather")]},
@@ -611,14 +630,14 @@ class ConversationRuntimeTest(unittest.IsolatedAsyncioTestCase):
                      "Hace sol. Ejemplo: `requests.get('https://example.com')`"]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=responses)) as request:
             await self.engine.process(self.cog._queue.get_nowait())
-        validator = json.dumps(request.await_args_list[1].args[2])
+        validator = json.dumps(request.await_args_list[2].args[2])
         self.assertNotIn("PRIVATE_", validator)
-        planner = json.dumps(request.await_args_list[2].args[2])
+        planner = json.dumps(request.await_args_list[3].args[2])
         self.assertNotIn("PRIVATE_", planner)
         self.assertNotIn("<@999>", planner)
         self.assertNotIn("guild_id", planner)
         self.engine.web.search_web.assert_awaited_once_with("tiempo Lisboa")
-        self.assertEqual(self.cog._acquire_slot.await_count, 6)
+        self.assertEqual(self.cog._acquire_slot.await_count, 7)
         reply = message.reply.await_args.args[0]
         self.assertNotIn("https://weather.example/lisbon", reply)
         self.assertIn("`requests.get('https://example.com')`", reply)
@@ -801,7 +820,7 @@ class ConversationRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 await self.engine.listen(message)
                 intent["tool_calls"][0]["function"]["arguments"] = json.dumps({"public_brief": {"topic": "Example", "question": question}})
                 with patch.object(self.engine, "web_context", new=AsyncMock(return_value=web)), patch(
-                        "cogs._conversation.request_completion", new=AsyncMock(side_effect=[intent, answer])) as request:
+                        "cogs._conversation.request_completion", new=AsyncMock(side_effect=[intent, web_selection("Example", question), answer])) as request:
                     await self.engine.process(self.cog._queue.get_nowait())
                 self.assertEqual(message.reply.await_args.args[0], answer)
                 context = json.loads(request.await_args.args[2][1]["content"])
@@ -818,11 +837,12 @@ class ConversationRuntimeTest(unittest.IsolatedAsyncioTestCase):
             "name": "request_public_web_research", "arguments": json.dumps({"public_brief": brief})}}]}
         url = "https://official.example/releases"
         self.engine.web = SimpleNamespace(read_webpage=AsyncMock(return_value={"url": url, "text": "Release 9 is current."}), close=AsyncMock())
-        responses = [intent, {"role": "assistant", "tool_calls": [self.tool_call("read_webpage", url)]},
+        responses = [intent, web_selection(**brief, topic_text="Estoy mirando las versiones de Example. PRIVATE_CONTEXT", source="c0"),
+                     {"role": "assistant", "tool_calls": [self.tool_call("read_webpage", url)]},
                      research_report([research_fact(url, "Release 9 is current.")], sufficient=True), "La versión actual es 9."]
         with patch("cogs._conversation.request_completion", new=AsyncMock(side_effect=responses)) as request:
             await self.engine.process(self.cog._queue.get_nowait())
-        planner = request.await_args_list[1].args[2]
+        planner = request.await_args_list[2].args[2]
         self.assertEqual(json.loads(planner[1]["content"])["public_brief"], brief)
         self.assertNotIn("PRIVATE_CONTEXT", json.dumps(planner))
         self.assertIn("PRIVATE_CONTEXT", json.dumps(request.await_args_list[0].args[2]))
@@ -881,7 +901,7 @@ class ConversationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.engine.web = SimpleNamespace(search_web=AsyncMock(side_effect=lambda query: {"results": [{"url": url, "title": "Example releases"},
             {"url": "https://official.example/discovery/" + query.rsplit(" ", 1)[-1]}]}),
             read_webpage=AsyncMock(return_value={"url": url, "text": "Release 9 is current."}), close=AsyncMock())
-        responses = [intent] + [{"role": "assistant", "tool_calls": [self.tool_call(argument=f"Example release {index}", call_id=f"q{index}")]} for index in range(5)]
+        responses = [intent, web_selection("Example", message.content)] + [{"role": "assistant", "tool_calls": [self.tool_call(argument=f"Example release {index}", call_id=f"q{index}")]} for index in range(5)]
         responses += [{"role": "assistant", "tool_calls": [self.tool_call("read_webpage", url, "release")]},
                       research_report([research_fact(url, "Release 9 is current.")], sufficient=True), "La versión actual es 9."]
         job = self.cog._queue.get_nowait()
@@ -890,7 +910,7 @@ class ConversationRuntimeTest(unittest.IsolatedAsyncioTestCase):
             await self.engine.process(job)
         self.assertEqual(self.engine.web.search_web.await_count, 5)
         self.assertIn("Deep Think está activo", request.await_args_list[0].args[2][0]["content"])
-        self.assertIn("Deep Think: test alternative", request.await_args_list[1].args[2][0]["content"])
+        self.assertIn("Deep Think: test alternative", request.await_args_list[2].args[2][0]["content"])
         for call in request.await_args_list:
             self.assertGreaterEqual(call.kwargs["max_output_tokens"], 4096)
             self.assertEqual(call.kwargs["timeout_seconds"], 300)
@@ -1705,6 +1725,7 @@ class ConversationRuntimeTest(unittest.IsolatedAsyncioTestCase):
         intent = {"id": "intent", "type": "function", "function": {"name": "request_public_web_research", "arguments": json.dumps({
             "public_brief": {"topic": "Example", "question": message.content}})}}
         responses = [{"role": "assistant", "tool_calls": [intent]},
+                     web_selection("Example", message.content),
                      {"role": "assistant", "tool_calls": [self.tool_call()]},
                      *[{"role": "assistant", "content": "No evidence"} for _ in range(3)],
                      "No pude verificar la última versión."]
