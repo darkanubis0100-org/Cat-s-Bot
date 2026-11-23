@@ -4,6 +4,8 @@ import hashlib
 import json
 import re
 import time
+import queue
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin, urlsplit
 
@@ -34,6 +36,107 @@ MAX_STREAM_RESOLVER_WORKERS = 4
 MAX_PENDING_STREAM_RESOLVES = 8
 MAX_PENDING_STREAM_RESOLVES_PER_GUILD = 1
 STREAM_RESOLVE_WAIT_SECONDS = 30.0
+
+
+class _RadioBuffer(discord.AudioSource):
+    """Reserva PCM de 300 ms; el reproductor nunca espera a la red."""
+
+    FRAME_COUNT = 15
+    SILENCE = bytes(discord.opus.Encoder.FRAME_SIZE)
+
+    def __init__(self, original):
+        self.original = original
+        self._frames = queue.Queue(maxsize=self.FRAME_COUNT)
+        self._stopped = threading.Event()
+        self._finished = threading.Event()
+        self._reader = None
+        self._reader_error = None
+        self._buffering = True
+
+    @property
+    def _current_error(self):
+        return self._reader_error or getattr(self.original, "_current_error", None)
+
+    def _fill(self):
+        try:
+            while not self._stopped.is_set():
+                frame = self.original.read()
+                if not frame:
+                    break
+                while not self._stopped.is_set():
+                    try:
+                        self._frames.put(frame, timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
+        except Exception as exc:
+            if not self._stopped.is_set():
+                self._reader_error = exc
+        finally:
+            self._finished.set()
+
+    def read(self) -> bytes:
+        if self._stopped.is_set():
+            return b""
+        if self._reader is None:
+            self._reader = threading.Thread(target=self._fill, name="radio-pcm", daemon=True)
+            self._reader.start()
+        finished = self._finished.is_set()
+        if self._buffering:
+            if self._frames.qsize() < self.FRAME_COUNT and not finished:
+                return self.SILENCE
+            self._buffering = False
+        try:
+            return self._frames.get_nowait()
+        except queue.Empty:
+            if finished:
+                return b""
+            self._buffering = True
+            return self.SILENCE
+
+    def cleanup(self):
+        if self._stopped.is_set():
+            return
+        self._stopped.set()
+        try:
+            self.original.cleanup()
+        finally:
+            if self._reader is not None and self._reader is not threading.current_thread():
+                self._reader.join(timeout=1.0)
+
+
+class _RadioAudioSource(discord.PCMVolumeTransformer):
+    """Ajusta Opus desde el lector de audio, el mismo hilo que codifica PCM."""
+
+    def __init__(self, original, voice_client, *, volume: float):
+        super().__init__(original, volume=volume)
+        self._voice_client = voice_client
+        self._encoder = None
+        self.bitrate = 128  # Valor del SDK si la conexión aún no conoce el canal.
+        self.bitrate = self._channel_bitrate()
+
+    def _channel_bitrate(self) -> int:
+        channel = getattr(self._voice_client, "channel", None)
+        bits_per_second = getattr(channel, "bitrate", None)
+        if bits_per_second is None:
+            return self.bitrate
+        # Discord usa bits/s; discord.py multiplica su parámetro por 1024.
+        # Su encoder PCM admite 16..512, incluso si el canal permite sólo 8k.
+        return max(16, min(512, bits_per_second // 1024))
+
+    @property
+    def _current_error(self):
+        return getattr(self.original, "_current_error", None)
+
+    def read(self) -> bytes:
+        if self._encoder is None:
+            self._encoder = self._voice_client.encoder
+        bitrate = self._channel_bitrate()
+        if bitrate != self.bitrate:
+            self._encoder.set_bitrate(bitrate)
+            self.bitrate = bitrate
+        # Conservar PCM sin transformar al 100 %, sin multiplicar cada muestra.
+        return self.original.read() if self.volume == 1.0 else super().read()
 
 
 class RadioStationSelectView(discord.ui.View):
@@ -686,9 +789,11 @@ class Radio(commands.Cog):
                 **ffmpeg_options,
             )
 
-            vol = cfg.get("volume", 100) / 100.0
-            if vol != 1.0:
-                audio_source = discord.PCMVolumeTransformer(audio_source, volume=vol)
+            audio_source = _RadioAudioSource(
+                _RadioBuffer(audio_source),
+                vc,
+                volume=cfg.get("volume", 100) / 100.0,
+            )
 
             started_at = time.monotonic()
 
@@ -723,7 +828,20 @@ class Radio(commands.Cog):
                         self.bot.loop,
                     )
 
-            vc.play(audio_source, after=after_playback)
+            vc.play(
+                audio_source,
+                after=after_playback,
+                application="audio",
+                bitrate=audio_source.bitrate,
+                bandwidth="full",
+                signal_type="music",
+            )
+            logger.info(
+                "[radio] Perfil Opus aplicado guild=%s canal=%s bitrate=%s bit/s",
+                channel.guild.id,
+                getattr(getattr(vc, "channel", None), "id", None),
+                audio_source.bitrate * 1024,
+            )
 
             # Actualizar el status visible del canal de voz donde reproduce.
             # No cambiamos la presencia/perfil del bot: sólo el estado del voicechat.
