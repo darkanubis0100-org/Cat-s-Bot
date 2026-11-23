@@ -52,15 +52,37 @@ class _RadioBuffer(discord.AudioSource):
         self._reader = None
         self._reader_error = None
         self._buffering = True
+        self._played = False
+        self._dry_since = None
+        self._dry_peak = 0.0
+        self._counts = {"startup_silence": 0, "underruns": 0, "silence_after_start": 0}
+
+    def diagnostics(self, now):
+        dry_since = self._dry_since
+        dry = 0.0 if dry_since is None else now - dry_since
+        return {**self._counts, "dry_peak_ms": round(max(self._dry_peak, dry) * 1000, 1)}
+
+    def _silence(self, now):
+        if self._played:
+            if self._dry_since is None:
+                self._counts["underruns"] += 1
+                self._dry_since = now
+            self._counts["silence_after_start"] += 1
+        else:
+            self._counts["startup_silence"] += 1
+        return self.SILENCE
 
     @property
     def _current_error(self):
         return self._reader_error or getattr(self.original, "_current_error", None)
 
+    def _read_frame(self):
+        return self.original.read()
+
     def _fill(self):
         try:
             while not self._stopped.is_set():
-                frame = self.original.read()
+                frame = self._read_frame()
                 if not frame:
                     break
                 while not self._stopped.is_set():
@@ -79,20 +101,26 @@ class _RadioBuffer(discord.AudioSource):
         if self._stopped.is_set():
             return b""
         if self._reader is None:
-            self._reader = threading.Thread(target=self._fill, name="radio-pcm", daemon=True)
+            self._reader = threading.Thread(target=self._fill, name="radio-producer", daemon=True)
             self._reader.start()
         finished = self._finished.is_set()
+        now = time.monotonic()
         if self._buffering:
             if self._frames.qsize() < self.FRAME_COUNT and not finished:
-                return self.SILENCE
+                return self._silence(now)
             self._buffering = False
         try:
-            return self._frames.get_nowait()
+            frame = self._frames.get_nowait()
+            self._played = True
+            if self._dry_since is not None:
+                self._dry_peak = max(self._dry_peak, now - self._dry_since)
+                self._dry_since = None
+            return frame
         except queue.Empty:
             if finished:
                 return b""
-            self._buffering = True
-            return self.SILENCE
+            # Tras arrancar, no ampliar un underrun aislado a otro prellenado.
+            return self._silence(now)
 
     def cleanup(self):
         if self._stopped.is_set():
@@ -105,15 +133,49 @@ class _RadioBuffer(discord.AudioSource):
                 self._reader.join(timeout=1.0)
 
 
-class _RadioAudioSource(discord.PCMVolumeTransformer):
-    """Ajusta Opus desde el lector de audio, el mismo hilo que codifica PCM."""
+class _RadioAudioSource(_RadioBuffer):
+    """Codifica antes de la reserva: el hilo de envío sólo recibe Opus listo."""
+
+    SILENCE = b"\xf8\xff\xfe"  # Silencio Opus de 20 ms usado por discord.py.
 
     def __init__(self, original, voice_client, *, volume: float):
-        super().__init__(original, volume=volume)
+        self._error_source = original
+        if volume != 1.0:
+            original = discord.PCMVolumeTransformer(original, volume=volume)
+        super().__init__(original)
         self._voice_client = voice_client
         self._encoder = None
+        self._complexity = None
         self.bitrate = 128  # Valor del SDK si la conexión aún no conoce el canal.
         self.bitrate = self._channel_bitrate()
+        self._last_read_at = None
+        self._reader_gap_peak = 0.0
+        self._read_counts = {"reader_frames": 0, "reader_late": 0, "reader_burst": 0}
+        self._diagnostics_at = time.monotonic()
+        self._diagnostics_last = {}
+        self._diagnostics_logged_at = None
+
+    def report_diagnostics(self, guild_id):
+        """Resumen desde el loop del bot; contadores acumulativos sin reset/hilo."""
+        now = time.monotonic()
+        elapsed = now - self._diagnostics_at
+        if elapsed < 60.0:
+            return
+        counts = {**self.diagnostics(now), **self._read_counts}
+        report = {
+            key: value if key.endswith("_ms") else value - self._diagnostics_last.get(key, 0)
+            for key, value in counts.items()
+        }
+        # Los picos son de esta reproducción; los contadores son del intervalo.
+        report["reader_gap_peak_ms"] = round(self._reader_gap_peak * 1000, 1)
+        report["encoder_complexity"] = self._complexity if self._complexity is not None else "default"
+        anomalous = any(report.get(key, 0) for key in ("underruns", "silence_after_start", "reader_late", "reader_burst"))
+        # Salud al primer minuto y cada cinco; anomalías como máximo cada minuto.
+        if anomalous or self._diagnostics_logged_at is None or now - self._diagnostics_logged_at >= 300:
+            logger.info("[radio] Audio guild=%s window_s=%.1f stats=%s", guild_id, elapsed, report)
+            self._diagnostics_logged_at = now
+        self._diagnostics_at = now
+        self._diagnostics_last = counts
 
     def _channel_bitrate(self) -> int:
         channel = getattr(self._voice_client, "channel", None)
@@ -126,17 +188,58 @@ class _RadioAudioSource(discord.PCMVolumeTransformer):
 
     @property
     def _current_error(self):
-        return getattr(self.original, "_current_error", None)
+        return self._reader_error or getattr(self._error_source, "_current_error", None)
+
+    def is_opus(self) -> bool:
+        return True
+
+    @staticmethod
+    def _configure_complexity(encoder) -> bool:
+        """Ajuste opcional; el encoder sigue válido si el SDK no lo expone."""
+        try:
+            setter = getattr(encoder, "set_complexity", None)
+            if callable(setter):
+                return setter(5) is not False
+            # discord.py 2.7.1 ya enlaza este CTL variádico de libopus.
+            state_type = getattr(discord.opus, "EncoderStructPtr", None)
+            state = getattr(encoder, "_state", None)
+            ctl = getattr(getattr(discord.opus, "_lib", None), "opus_encoder_ctl", None)
+            if not isinstance(state_type, type) or not isinstance(state, state_type) or not state or not callable(ctl):
+                return False
+            return ctl(state, 4010, 5) == 0  # OPUS_SET_COMPLEXITY_REQUEST
+        except Exception:
+            # Sólo falla esta optimización; no ocultar errores de encode/read.
+            return False
+
+    def _read_frame(self):
+        frame = self.original.read()
+        if not frame:
+            return b""
+        bitrate = self._channel_bitrate()
+        if self._encoder is None:
+            self._encoder = discord.opus.Encoder(
+                application="audio", bitrate=bitrate, bandwidth="full",
+                signal_type="music", fec=True, expected_packet_loss=.15,
+            )
+            if self._configure_complexity(self._encoder):
+                self._complexity = 5
+        elif bitrate != self.bitrate:
+            self._encoder.set_bitrate(bitrate)
+        self.bitrate = bitrate
+        return self._encoder.encode(frame, discord.opus.Encoder.SAMPLES_PER_FRAME)
 
     def read(self) -> bytes:
-        if self._encoder is None:
-            self._encoder = self._voice_client.encoder
-        bitrate = self._channel_bitrate()
-        if bitrate != self.bitrate:
-            self._encoder.set_bitrate(bitrate)
-            self.bitrate = bitrate
-        # Conservar PCM sin transformar al 100 %, sin multiplicar cada muestra.
-        return self.original.read() if self.volume == 1.0 else super().read()
+        now = time.monotonic()
+        # El SDK espera 40 ms después de su primera trama, luego usa 20 ms.
+        # Pausas/reconexiones también pueden aparecer como huecos de lectura.
+        if self._last_read_at is not None and self._read_counts["reader_frames"] > 1:
+            gap = now - self._last_read_at
+            self._reader_gap_peak = max(self._reader_gap_peak, gap)
+            self._read_counts["reader_late"] += gap > .04
+            self._read_counts["reader_burst"] += gap < .01
+        self._last_read_at = now
+        self._read_counts["reader_frames"] += 1
+        return super().read()
 
 
 class RadioStationSelectView(discord.ui.View):
@@ -267,6 +370,10 @@ class Radio(commands.Cog):
         for guild in self.bot.guilds:
             try:
                 await self._check_and_connect_guild(guild)
+                vc = self._voice_client_for_guild(guild)
+                source = getattr(vc, "source", None)
+                if isinstance(source, _RadioAudioSource):
+                    source.report_diagnostics(guild.id)
             except Exception:
                 logger.exception("[radio] Fallo revisando la radio de guild %s", guild.id)
 
@@ -790,7 +897,7 @@ class Radio(commands.Cog):
             )
 
             audio_source = _RadioAudioSource(
-                _RadioBuffer(audio_source),
+                audio_source,
                 vc,
                 volume=cfg.get("volume", 100) / 100.0,
             )
@@ -831,10 +938,6 @@ class Radio(commands.Cog):
             vc.play(
                 audio_source,
                 after=after_playback,
-                application="audio",
-                bitrate=audio_source.bitrate,
-                bandwidth="full",
-                signal_type="music",
             )
             logger.info(
                 "[radio] Perfil Opus aplicado guild=%s canal=%s bitrate=%s bit/s",
